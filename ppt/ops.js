@@ -5,6 +5,8 @@
   const STYLE_OK = new Set(['grid-area', 'background', 'border', 'border-radius', 'box-shadow', 'text-align',
     'color', 'font-size', 'font-weight', 'font-style', 'text-decoration', 'opacity']);
   const DEEP = new Set(['color', 'font-size', 'font-weight', 'font-style', 'text-decoration', 'text-align']);
+  // tags whose own default (bold headings, italic <em>, underlined links) would ignore an inherited block value
+  const TAGS = { 'font-weight': 'h1,h2,h3,h4,h5,h6,b,strong,th', 'font-style': 'i,em', 'text-decoration': 'u,ins,a' };
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
   function clampGrid(g) {
@@ -22,7 +24,10 @@
       for (const [k, v] of Object.entries(style)) {
         if (v == null || v === '') t.style.removeProperty(k); else t.style.setProperty(k, v);
         // a whole-block text style must win over values inner elements carry themselves
-        if (a.deep && DEEP.has(k)) t.querySelectorAll('[style]').forEach((n) => { n.style.removeProperty(k); dropEmptyStyle(n); });
+        if (a.deep && DEEP.has(k)) {
+          t.querySelectorAll('[style]').forEach((n) => { n.style.removeProperty(k); dropEmptyStyle(n); });
+          if (TAGS[k] && v != null && v !== '') t.querySelectorAll(TAGS[k]).forEach((n) => n.style.setProperty(k, 'inherit'));
+        }
       }
       dropEmptyStyle(t);
     },

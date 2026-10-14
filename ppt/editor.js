@@ -88,12 +88,19 @@
     commit({ op: 'setStyle', target: selected.id, args: { style }, label: `样式 ${styleLabel(style)} ${selected.id}` });
     tb.reposition();
   }
-  const TOGGLES = { bold: ['font-weight', '700'], italic: ['font-style', 'italic'], underline: ['text-decoration', 'underline'] };
+  const TOGGLES = { bold: ['font-weight', '700', '400'], italic: ['font-style', 'italic', 'normal'], underline: ['text-decoration', 'underline', 'none'] };
+  function isOn(cmd, block) { // judge from what the user sees (headings are bold by default), not from inline styles
+    let n = [...block.querySelectorAll('*')].find((x) => !x.children.length && x.textContent.trim()) || block;
+    if (cmd === 'bold') return parseInt(getComputedStyle(n).fontWeight, 10) >= 600;
+    if (cmd === 'italic') return getComputedStyle(n).fontStyle === 'italic';
+    for (; n && n !== block.parentElement; n = n.parentElement) if (getComputedStyle(n).textDecorationLine.includes('underline')) return true;
+    return false; // underline doesn't inherit as a value: it is on if any ancestor up to the block draws it
+  }
   function toggle(cmd) {
     if (editing && restoreRange()) { document.execCommand('styleWithCSS', false, false); document.execCommand(cmd); return; }
     if (!selected) return;
-    const [prop, on] = TOGGLES[cmd];
-    textStyle({ [prop]: selected.style.getPropertyValue(prop) === on ? null : on });
+    const [prop, on, off] = TOGGLES[cmd];
+    textStyle({ [prop]: isOn(cmd, selected) ? off : on });
   }
   function border({ color, width }) {
     if (!selected) return;
@@ -319,7 +326,7 @@
     } catch { offline = true; render(); }
   }
   document.addEventListener('keydown', (e) => {
-    if (editing) { if (e.key === 'Escape') editing.block.blur(); return; } // typing and its own undo belong to the browser
+    if (editing) { if (e.key === 'Escape') endEdit(); return; } // typing and its own undo belong to the browser; Escape works even from a toolbar control
     if (e.target.closest?.('#ppt-ui') && /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName)) return;
     const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
     if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); undoRedo('undo'); }

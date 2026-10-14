@@ -293,6 +293,23 @@ class HistoryTests(ServerCase):
         s = json.loads(self.req("GET", "/api/state?t=tok")[1])["history"]
         self.assertEqual((s["ok"], s["canUndo"]), (False, False))
 
+    def test_undo_right_after_claude_write_keeps_it_recoverable(self):  # review C1
+        a = self.deck_text()
+        self.put(a.replace("副标题", "B"))
+        b = self.deck_text()
+        (self.deck / "deck.html").write_text(b.replace(">B<", ">CLAUDE<"), encoding="utf-8")
+        self.assertEqual(self.req("POST", "/api/undo?t=tok", {})[0], 200)  # before the 0.5 s watcher tick
+        self.assertEqual(self.deck_text(), b)
+        self.assertEqual(inbox(self.deck)[-1]["label"], "撤销了 Claude 修改")
+        self.req("POST", "/api/redo?t=tok", {})
+        self.assertIn(">CLAUDE<", self.deck_text())
+
+    def test_put_right_after_claude_write_gets_its_own_row(self):  # review C1
+        (self.deck / "deck.html").write_text(self.deck_text().replace("副标题", "CLAUDE"), encoding="utf-8")
+        self.put(self.deck_text().replace("CLAUDE", "USER"), "改字")
+        rows = self.srv.history.rows
+        self.assertEqual([(r["by"], r["label"]) for r in rows[-2:]], [("claude", "Claude 修改"), ("user", "改字")])
+
     def test_restart_keeps_position(self):
         a = self.deck_text()
         self.put(a.replace("副标题", "B"))

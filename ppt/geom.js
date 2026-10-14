@@ -47,7 +47,7 @@
   function gridOf(el) { // the block's grid lines; derived from layout when Claude used spans or no inline grid-area
     const s = el.style, n = (v) => parseInt(v, 10);
     const g = { r1: n(s.gridRowStart), c1: n(s.gridColumnStart), r2: n(s.gridRowEnd), c2: n(s.gridColumnEnd) };
-    if ([g.r1, g.c1, g.r2, g.c2].every(Number.isFinite) && !/span/.test(s.gridArea)) return g;
+    if ([g.r1, g.c1, g.r2, g.c2].every((v) => v >= 1) && !/span/.test(s.gridArea)) return g; // -1 etc. count from the end: use layout
     const [cols, rows] = rectToCells(elementRect(el.closest('section.slide').getBoundingClientRect(), el)).split('/');
     const [c1, c2] = cols.split('-').map(Number), [r1, r2] = rows.split('-').map(Number);
     return { r1, c1, r2: r2 + 1, c2: c2 + 1 };

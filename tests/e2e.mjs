@@ -264,8 +264,11 @@ try {
   check('F background colour', /id="b-p2-title" style="[^"]*background: rgb\(239, 68, 68\)/.test(deckHtml()));
   await ev(`(() => { const s = [...document.querySelectorAll('.ppt-bar select')].find((n) => n.title === '字号'); s.value = '40'; s.dispatchEvent(new Event('change')); })()`); await sleep(2000);
   check('F size select deep', /id="b-p2-title" style="[^"]*font-size: 40px/.test(deckHtml()) && !/id="b-p2-title"[^>]*><h1 style="[^"]*font-size/.test(deckHtml()));
+  b2 = await byTitle('加粗'); await click(b2.x, b2.y); await sleep(2000);   // the title is an <h1>: bold by default
+  check('F bold toggles off a bold heading', /id="b-p2-title" style="[^"]*font-weight: 400/.test(deckHtml())
+    && (await ev(`parseInt(getComputedStyle(document.querySelector('#b-p2-title h1')).fontWeight, 10)`)) < 600);
   b2 = await byTitle('加粗'); await click(b2.x, b2.y); await sleep(2000);
-  check('F bold whole block', /id="b-p2-title" style="[^"]*font-weight: 700/.test(deckHtml()));
+  check('F bold toggles back on', /id="b-p2-title" style="[^"]*font-weight: 700/.test(deckHtml()));
   await ev(`(() => { const s = [...document.querySelectorAll('.ppt-bar select')].find((n) => n.title === '边框粗细'); s.value = '2'; s.dispatchEvent(new Event('change')); })()`); await sleep(2000);
   check('F border width', /id="b-p2-title" style="[^"]*border: 2px solid/.test(deckHtml()));
   b2 = await byTitle('阴影'); await click(b2.x, b2.y); await sleep(2000);
@@ -280,6 +283,12 @@ try {
   check('F edit mode survives toolbar use', (await ev(`document.querySelector('#b-p2-sub')?.contentEditable`)) === 'true');
   await click(5, 60); await sleep(2500);
   check('F edit-mode colour wraps span', /id="b-p2-sub"[\s\S]*?<span style="color: rgb\(37, 99, 235\);">/.test(deckHtml()));
+  // Escape must leave edit mode even when focus sits on a toolbar dropdown (review I2)
+  const fe = await rectOf('#b-p2-sub p');
+  await dblclick(fe.x, fe.y); await sleep(300);
+  await ev(`[...document.querySelectorAll('.ppt-bar select')].find((n) => n.title === '字号').focus()`); await sleep(100);
+  await key('Escape', 'Escape', 27); await sleep(500);
+  check('F Escape from toolbar control ends edit mode', (await ev(`document.querySelector('#b-p2-sub')?.contentEditable`)) !== 'true');
   check('F recent colours remembered', ((await ev(`localStorage.getItem(Object.keys(localStorage).find((k) => k.startsWith('ppt-recent-colors')))`)) || '').includes('#2563eb'));
   // ask Claude about the selection
   const fa = await rectOf('#b-p2-title'); await click(fa.x, fa.t + 10); await sleep(300); // earlier moves made the title overlap the subtitle

@@ -19,6 +19,7 @@
 </section>
 <section class="slide" id="s2">
   <div class="block" id="e" style="grid-row:2/4;grid-column:3/span 2">span-based</div>
+  <div class="block" id="f" style="grid-area:1/1/-1/-1"></div>
 </section>
 <script src="geom.js"></script>
 <script src="ops.js"></script>
@@ -63,6 +64,7 @@
   check('dragGrid resize min 1 cell', G.dragGrid(g0, -1000, 0, 'se'), {r1:3,c1:2,r2:6,c2:3});
   check('dragGrid resize nw clamps', G.dragGrid(g0, -1000, -1000, 'nw'), {r1:1,c1:1,r2:6,c2:9});
   check('gridStr', G.gridStr(g0), '3/2/6/9');
+  check('gridOf negative lines use layout', G.gridOf(document.getElementById('f')), {r1:1,c1:1,r2:10,c2:17});
 
   // ---- ops ----
   const O = PPTOps;
@@ -90,6 +92,8 @@
   check('ops insertSlide after', [...d.querySelectorAll('section.slide')].map((s) => s.id), ['t1', 't9', 't2']);
   O.apply(d, {op:'removeSlide', target:'t9'}); O.apply(d, {op:'removeSlide', target:'t2'});
   check('ops keeps the last slide', O.apply(d, {op:'removeSlide', target:'t1'}), false);
+  const d3 = mk(); O.apply(d3, {op:'setStyle', target:'a', args:{style:{'font-weight':'400'}, deep:true}});
+  check('ops deep weight overrides heading tags', d3.querySelector('#a h1').getAttribute('style'), 'color: red; font-size: 40px; font-weight: inherit;');
   check('ops newId unique', /^b-[0-9a-z]{6}$/.test(O.newId(d, 'b-')), true);
   const SEQ = [
     {op:'setStyle', target:'a', args:{style:{'font-size':'32px', 'text-align':'center'}, deep:true}},

@@ -237,6 +237,7 @@ class History:
 
     def step(self, d):
         """Undo (d=-1) or redo (d=+1); returns the row undone/redone, or None."""
+        self.sync()  # a Claude write the watcher has not seen yet must become its own step first
         j = self.cur + d
         if not self.ok or not 0 <= j < len(self.rows):
             return None
@@ -371,6 +372,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": str(e)})
         deck = self.server.deck
         with LOCK:
+            self.server.history.sync()  # record a not-yet-seen Claude write before the user's snapshot
             cur = deck_version(deck)
             if ver != cur:
                 return self.send(409, {"version": cur})

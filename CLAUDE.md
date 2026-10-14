@@ -1,0 +1,2 @@
+﻿
+@.vibe/rules.md

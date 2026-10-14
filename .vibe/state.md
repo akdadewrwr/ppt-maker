@@ -1,16 +1,13 @@
 ## 上一轮完成
-- 新功能：改字模式下选中文字 + 右键 → 只改这段（quote 字段，不截图）；已推送 feat/core-loop
-- 事故：测试脚本误删 decks/试用，已从上次通知内容恢复（URL/口令/e1 回执都在）；脚本已改为只删自己的 smoke 目录
+- 子项目 1（核心闭环）已快进合并到 main 并推送，feat/core-loop 分支已删除（本地+远程）
 ## 关键结论
-- 测试：24 个 unittest、浏览器检查 35/35；（此前）21 个 unittest、selftest 14/14、浏览器脚本检查 32/32、端到端 7 项（本会话扮演 Claude 端）全部通过
-- 审查修复：队列丢事件、刷新冲掉输入、坏事件卡死 --tail、离线改字跨重启丢失、保存时泄漏外部 DOM/粘贴 HTML
-- 口令改为按 deck 持久化（.ppt/token），重启 URL 不变
-- 延后的小问题 7 条（见最终回复）；M6 双击改字需用户确认
+- main = 21db328；24 个 unittest、浏览器检查 35/35 通过
+- 功能：框选/单击块 → 意图+截图；双击改字；改字模式选字+右键 → quote 意图（不截图）；气泡对话；lint 自动上报
+- 口令按 deck 持久化（.ppt/token）；试用服务+监听仍在本会话运行（decks/试用，未入库）
+- 延后小问题：M2 无口令可让服务读 ≤10MB 请求体、M3 缩放下点选排序、M4 多标签重复发送、M5 超长意图静默丢弃、M7 重挂监听会重发处理中事件
 ## 改动文件
-- ppt/{server.py,test_server.py,template.html,geom.js,selftest.html,editor.js,editor.css,vendor/}
-- .claude/commands/ppt.md, .gitignore, spec（口令持久化、轮询）
+- （本轮无代码改动）git 合并与分支清理
 ## 当前 blocker
-- 用户正在试用 /ppt 试用（本会话服务+监听运行中）；之后再选合并方式
-- 选字交互维持现状（先双击进改字模式再选字+右键），用户确认不改
+- 等用户选下一个子项目
 ## 下一步
-- 用户重启 Claude Code，在本仓库跑 `/ppt <名字>` 实际试用
+- 候选：导出 pptx（推荐）/ 知识库接入 / 手绘草图 / Codex 接入；先 brainstorm 再写 spec

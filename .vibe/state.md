@@ -1,14 +1,13 @@
 ## 上一轮完成
-- 子项目 1（核心闭环）已快进合并到 main 并推送，feat/core-loop 分支已删除（本地+远程）
+- 2a 完成 + 最终审查修复（C1 撤销丢 Claude 写入、负网格线拖动塌缩、Escape 卡改字模式、标题无法取消加粗），已推送 feat/basic-editing-2a
 ## 关键结论
-- main = 21db328；24 个 unittest、浏览器检查 35/35 通过
-- 功能：框选/单击块 → 意图+截图；双击改字；改字模式选字+右键 → quote 意图（不截图）；气泡对话；lint 自动上报
-- 口令按 deck 持久化（.ppt/token）；试用服务+监听仍在本会话运行（decks/试用，未入库）
-- 延后小问题：M2 无口令可让服务读 ≤10MB 请求体、M3 缩放下点选排序、M4 多标签重复发送、M5 超长意图静默丢弃、M7 重挂监听会重发处理中事件
+- 测试：34 个 unittest、selftest 37/37、浏览器检查 61/61；真实会话验收：直接改色→edit 事件；问 Claude→修改；撤销 Claude 修改→undo 事件且不改回；重做
+- 新功能：顶栏（撤销/重做/+文字/+页/−页/状态）、单击选中+浮动栏、拖动/拉伸吸网格、字色字号BIU对齐、背景/边框/圆角/阴影、改字模式内选字格式、Delete/Enter/Ctrl+Z
+- 修了 2 个实现中发现的 bug：端口占用时 server_close 崩溃；工具栏文本框抢焦点导致 Delete 无效
+- 试用服务已用新代码重启（URL 不变）
 ## 改动文件
-- （本轮无代码改动）git 合并与分支清理
+- ppt/{server.py,test_server.py,ops.js,geom.js,selftest.html,toolbar.js,editor.js,editor.css}、tests/e2e.mjs、.claude/commands/ppt.md、spec
 ## 当前 blocker
-- 2a 实施计划已写：docs/superpowers/plans/2026-10-14-ppt-maker-basic-editing-2a.md（7 个任务），等用户审阅并选执行方式
+- 等用户选：合并 main / 开 PR / 保留分支
 ## 下一步
-- 顺序：基础编辑 → 手绘草图 → 知识库；导出 pptx 放最后
-- 已定：页面直接改；顶栏+浮动栏；颜色完全自由；撤销含 Claude 修改（快照）；块吸网格+浮动对象自由；图标=Lucide 内置+让 Claude 画；方案 A（页面在文件原文上改整份写回）；1 份 spec 2 份计划（2a 选中/格式/样式/拖拉/撤销/增删页，2b 浮动对象）；浏览器测试脚本入库为 tests/e2e.mjs
+- 合并后 → 2b（形状/箭头/图标/图片）计划

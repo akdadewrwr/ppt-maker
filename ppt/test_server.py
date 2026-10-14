@@ -1,4 +1,5 @@
 import http.client, json, shutil, socket, sys, tempfile, threading, unittest
+import time as _time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -107,6 +108,27 @@ class EventTests(ServerCase):
         self.assertEqual(self.req("POST", "/api/event?t=no", {"type": "intent", "text": "x"})[0], 403)
         self.assertEqual(inbox(self.deck), [])
 
+    def test_rejected_write_still_answers_403(self):
+        # unread request bodies make Windows reset the socket instead of delivering the 403
+        # repro: body arrives after the server already answered and closed -> RST, client never sees the status
+        def slow(method, path):
+            body = b'{"type": "intent", "text": "x"}'
+            s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            s.sendall(f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                      f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n".encode())
+            _time.sleep(0.3)
+            try:
+                s.sendall(body)
+                _time.sleep(0.3)
+                return int(s.recv(64).split()[1])
+            except OSError as e:
+                return repr(e)
+            finally:
+                s.close()
+        self.assertEqual(slow("POST", "/api/event"), 403)
+        self.assertEqual(slow("PUT", "/api/deck?t=no"), 403)
+        self.assertEqual(slow("POST", "/api/nope?t=tok"), 404)
+
     def test_post_rejects_bad_input(self):
         for bad in ({"type": "edit"}, {"type": "nope"}, [], {"type": "intent", "text": "字" * 4001},
                     {"type": "intent", "shot": "data:image/png;base64,R0lGODlh"}, {"type": "intent", "shot": "data:,!!!"}):
@@ -144,8 +166,6 @@ class EventTests(ServerCase):
         (self.deck / ".ppt" / "heartbeat").write_text("x")
         self.assertTrue(json.loads(self.req("GET", "/api/state?t=tok")[1])["online"])
 
-
-import time as _time
 
 
 class CliTests(ServerCase):

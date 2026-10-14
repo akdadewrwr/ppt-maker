@@ -172,6 +172,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def guard(self, need_token):
         """Host check always (DNS rebinding); token for pages/APIs. Returns parsed URL or None."""
+        if self.command in ("POST", "PUT"):
+            # read the body before any reply: closing with unread bytes makes Windows reset the
+            # socket, and the client never sees our 403/404
+            n = int(self.headers.get("Content-Length") or 0)
+            self.body = self.rfile.read(n) if 0 < n <= MAX_BODY else b""
+            self.too_large = n > MAX_BODY
         port = self.server.server_address[1]
         if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send(403, {"error": "bad host"})
@@ -207,10 +213,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
 
     def read_json(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if n > MAX_BODY:
+        if self.too_large:
             raise ValueError("body too large")
-        return json.loads(self.rfile.read(n) or b"null")
+        return json.loads(self.body or b"null")
 
     def do_POST(self):
         url = self.guard(need_token=True)

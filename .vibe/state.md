@@ -1,16 +1,14 @@
 ## 上一轮完成
-- 实施计划已写好并推送；spec 小改：SSE→每秒轮询 /api/state
+- 子项目 1（核心闭环）6 个任务 + 最终审查修复全部完成，分支 feat/core-loop 已推送
 ## 关键结论
-- 计划：docs/superpowers/plans/2026-10-14-ppt-maker-core-loop.md，共 6 个任务
-- T1 模板+服务骨架 / T2 事件与保存 API / T3 --tail --reply / T4 geom.js+selftest / T5 editor.js+css+截图库 / T6 /ppt 命令+端到端验收
-- 页面所有幻灯片竖向排列，按窗口宽缩放；坐标统一换算回 1280×720
-- 自动测试：15 个 unittest + selftest 14 项；editor 靠手动清单 + 端到端验收
-- 仓库：main → https://github.com/akdadewrwr/ppt-maker.git
+- 测试：21 个 unittest、selftest 14/14、浏览器脚本检查 32/32、端到端 7 项（本会话扮演 Claude 端）全部通过
+- 审查修复：队列丢事件、刷新冲掉输入、坏事件卡死 --tail、离线改字跨重启丢失、保存时泄漏外部 DOM/粘贴 HTML
+- 口令改为按 deck 持久化（.ppt/token），重启 URL 不变
+- 延后的小问题 7 条（见最终回复）；M6 双击改字需用户确认
 ## 改动文件
-- docs/superpowers/plans/2026-10-14-ppt-maker-core-loop.md（新）
-- docs/superpowers/specs/2026-10-14-ppt-maker-core-loop-design.md（轮询）
-- .vibe/state.md
+- ppt/{server.py,test_server.py,template.html,geom.js,selftest.html,editor.js,editor.css,vendor/}
+- .claude/commands/ppt.md, .gitignore, spec（口令持久化、轮询）
 ## 当前 blocker
-- 等用户审阅计划并选执行方式（Subagent-driven / Native）
+- 等用户选择：合并 main / 开 PR / 保留分支
 ## 下一步
-- 按选定方式从 Task 1 开始实现
+- 用户重启 Claude Code，在本仓库跑 `/ppt <名字>` 实际试用

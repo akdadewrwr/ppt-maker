@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>geom selftest</title>
+<style>
+  body { margin:0; font:14px system-ui; }
+  .slide { width:1280px; height:720px; display:grid;
+           grid-template-columns:repeat(16,minmax(0,1fr)); grid-template-rows:repeat(9,minmax(0,1fr)); }
+  .block { box-sizing:border-box; padding:8px; min-width:0; min-height:0; }
+  .block.grid { display:grid; gap:8px; }
+  .pass { color:#16a34a } .fail { color:#dc2626 }
+</style></head><body>
+<h1 id="result">running…</h1><ol id="log"></ol>
+<section class="slide" id="s1">
+  <div class="block" id="a" style="grid-area:1/1/3/17">title</div>
+  <div class="block" id="b" style="grid-area:3/1/9/9"><p style="height:2000px">tall</p></div>
+  <div class="block grid" id="c" style="grid-area:3/9/9/17;grid-template-columns:1fr 1fr">
+    <div class="block" id="c1">x</div><div class="block" id="c2">y</div>
+  </div>
+  <div class="block" id="d" style="grid-area:8/7/10/11">overlaps b and c</div>
+</section>
+<script src="geom.js"></script>
+<script>
+  const G = PPTGeom, log = document.getElementById('log'); let pass = 0, total = 0;
+  function check(name, got, want) {
+    total++; const ok = JSON.stringify(got) === JSON.stringify(want); if (ok) pass++;
+    const li = document.createElement('li'); li.className = ok ? 'pass' : 'fail';
+    li.textContent = `${ok ? 'PASS' : 'FAIL'} ${name}: got ${JSON.stringify(got)}${ok ? '' : ' want ' + JSON.stringify(want)}`;
+    log.appendChild(li);
+  }
+  const near = (r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Math.round(v / 2) * 2]));
+  const slide = document.getElementById('s1');
+
+  check('cells full', G.rectToCells({x:0,y:0,w:1280,h:720}), '1-16/1-9');
+  check('cells right half', G.rectToCells({x:640,y:160,w:640,h:480}), '9-16/3-8');
+  check('cells zero-size on boundary', G.rectToCells({x:80,y:80,w:0,h:0}), '2-2/2-2');
+  check('cells straddle', G.rectToCells({x:79,y:0,w:2,h:1}), '1-2/1-1');
+
+  const half = {left:100, top:50, width:640, height:360};   // slide shown at 50% (narrow window)
+  check('clientToSlide scaled', G.clientToSlide(half, 100, 50, 420, 230), {x:0,y:0,w:640,h:360});
+  check('clientToSlide reversed drag', G.clientToSlide(half, 420, 230, 100, 50), {x:0,y:0,w:640,h:360});
+  check('clientToSlide clamps', G.clientToSlide(half, 0, 0, 2000, 2000), {x:0,y:0,w:1280,h:720});
+  check('slideToClient scaled', G.slideToClient(half, {x:640,y:360,w:640,h:360}), {left:420,top:230,width:320,height:180});
+
+  check('elementRect c', near(G.elementRect(slide.getBoundingClientRect(), document.getElementById('c'))), {x:640,y:160,w:640,h:480});
+  check('hit inner first', G.hitBlocks(slide, {x:700,y:200,w:10,h:10}), ['c1','c']);
+  check('hit blank area', G.hitBlocks(slide, {x:1270,y:710,w:0,h:0}), []);
+  check('hit all', G.hitBlocks(slide, {x:0,y:0,w:1280,h:720}).sort(), ['a','b','c','c1','c2','d']);
+
+  const issues = G.lint(slide).map(i => `${i.kind}:${i.block}${i.other ? '/' + i.other : ''}`).sort();
+  check('lint', issues, ['overflow:b', 'overlap:d/b', 'overlap:d/c']);
+  document.getElementById('d').removeAttribute('id');
+  check('lint missing id', G.lint(slide).filter(i => i.kind === 'missing-id').length, 1);
+
+  const r = document.getElementById('result');
+  r.textContent = `${pass === total ? 'PASS' : 'FAIL'} ${pass}/${total}`; r.className = pass === total ? 'pass' : 'fail';
+</script>
+</body></html>

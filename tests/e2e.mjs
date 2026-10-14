@@ -255,6 +255,39 @@ try {
   check('U undo event for Claude', inbox().at(-1)?.op === 'undo' && /Claude/.test(inbox().at(-1)?.label || ''), JSON.stringify(inbox().at(-1)));
   tb = await byTitle('重做'); await click(tb.x, tb.y); await sleep(2500);
   check('U redo restores it', deckHtml().includes('data-claude'));
+  // ---- 2a: formatting and block style ----
+  await open(url); await sleep(2000); // let the load-time lint pass finish before taking the baseline
+  const lintBefore = inbox().filter((e) => e.type === 'lint').length;
+  const fx = await rectOf('#b-p2-title'); await click(fx.x, fx.t + 10); await sleep(300); // title overlaps the subtitle by now
+  let b2 = await byTitle('背景色'); await click(b2.x, b2.y); await sleep(200);
+  b2 = await byTitle('#ef4444'); await click(b2.x, b2.y); await sleep(2000);
+  check('F background colour', /id="b-p2-title" style="[^"]*background: rgb\(239, 68, 68\)/.test(deckHtml()));
+  await ev(`(() => { const s = [...document.querySelectorAll('.ppt-bar select')].find((n) => n.title === '字号'); s.value = '40'; s.dispatchEvent(new Event('change')); })()`); await sleep(2000);
+  check('F size select deep', /id="b-p2-title" style="[^"]*font-size: 40px/.test(deckHtml()) && !/id="b-p2-title"[^>]*><h1 style="[^"]*font-size/.test(deckHtml()));
+  b2 = await byTitle('加粗'); await click(b2.x, b2.y); await sleep(2000);
+  check('F bold whole block', /id="b-p2-title" style="[^"]*font-weight: 700/.test(deckHtml()));
+  await ev(`(() => { const s = [...document.querySelectorAll('.ppt-bar select')].find((n) => n.title === '边框粗细'); s.value = '2'; s.dispatchEvent(new Event('change')); })()`); await sleep(2000);
+  check('F border width', /id="b-p2-title" style="[^"]*border: 2px solid/.test(deckHtml()));
+  b2 = await byTitle('阴影'); await click(b2.x, b2.y); await sleep(2000);
+  check('F shadow toggle', /id="b-p2-title" style="[^"]*box-shadow/.test(deckHtml()));
+  // edit mode: colour only the selected characters
+  const fs2 = await rectOf('#b-p2-sub p');
+  await dblclick(fs2.x, fs2.y); await sleep(300);
+  await ev(`(() => { const t = document.querySelector('#b-p2-sub p').firstChild; const r = document.createRange(); r.setStart(t, 0); r.setEnd(t, 1); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()`);
+  await sleep(100);
+  b2 = await byTitle('字色'); await click(b2.x, b2.y); await sleep(200);
+  b2 = await byTitle('#2563eb'); await click(b2.x, b2.y); await sleep(200);
+  check('F edit mode survives toolbar use', (await ev(`document.querySelector('#b-p2-sub')?.contentEditable`)) === 'true');
+  await click(5, 60); await sleep(2500);
+  check('F edit-mode colour wraps span', /id="b-p2-sub"[\s\S]*?<span style="color: rgb\(37, 99, 235\);">/.test(deckHtml()));
+  check('F recent colours remembered', ((await ev(`localStorage.getItem(Object.keys(localStorage).find((k) => k.startsWith('ppt-recent-colors')))`)) || '').includes('#2563eb'));
+  // ask Claude about the selection
+  const fa = await rectOf('#b-p2-title'); await click(fa.x, fa.t + 10); await sleep(300); // earlier moves made the title overlap the subtitle
+  b2 = await byTitle('问 Claude'); await click(b2.x, b2.y); await sleep(300);
+  await type('标题改短一点'); await enter(); await sleep(2500);
+  const ask = inbox().at(-1);
+  check('F ask Claude sends selection', ask?.type === 'intent' && ask.blocks?.[0] === 'b-p2-title' && !!ask.shot, JSON.stringify({ ...ask, shot: !!ask?.shot }));
+  check('F user styling raises no lint for Claude', inbox().filter((e) => e.type === 'lint').length === lintBefore);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } finally {

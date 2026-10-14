@@ -58,7 +58,53 @@
     ask: askSelected,
   });
   addEventListener('scroll', () => tb.reposition(), { passive: true });
-  function textStyle() {} function blockStyle() {} function toggle() {} function border() {} function toggleShadow() {}
+  function restoreRange() { // put the edit-mode selection back after a toolbar control took focus
+    if (!editing) return false;
+    editing.block.focus();
+    const s = getSelection();
+    s.removeAllRanges();
+    if (savedRange) s.addRange(savedRange);
+    return !!savedRange && !savedRange.collapsed;
+  }
+  function wrapSelection(style) { // edit mode: style just the selected characters
+    const r = savedRange, span = document.createElement('span');
+    for (const [k, v] of Object.entries(style)) if (v != null) span.style.setProperty(k, v);
+    span.appendChild(r.extractContents());
+    r.insertNode(span);
+    const nr = document.createRange(); nr.selectNodeContents(span);
+    const s = getSelection(); s.removeAllRanges(); s.addRange(nr); savedRange = nr;
+  }
+  const styleLabel = (style) => Object.entries(style).map(([k, v]) => `${k}=${v ?? '无'}`).join(' ');
+  function textStyle(style) {
+    rememberColor(style.color);
+    if (editing && restoreRange()) return wrapSelection(style);
+    if (!selected) return;
+    commit({ op: 'setStyle', target: selected.id, args: { style, deep: true }, label: `文字 ${styleLabel(style)} ${selected.id}` });
+    tb.reposition();
+  }
+  function blockStyle(style) {
+    if (!selected) return;
+    rememberColor(style.background);
+    commit({ op: 'setStyle', target: selected.id, args: { style }, label: `样式 ${styleLabel(style)} ${selected.id}` });
+    tb.reposition();
+  }
+  const TOGGLES = { bold: ['font-weight', '700'], italic: ['font-style', 'italic'], underline: ['text-decoration', 'underline'] };
+  function toggle(cmd) {
+    if (editing && restoreRange()) { document.execCommand('styleWithCSS', false, false); document.execCommand(cmd); return; }
+    if (!selected) return;
+    const [prop, on] = TOGGLES[cmd];
+    textStyle({ [prop]: selected.style.getPropertyValue(prop) === on ? null : on });
+  }
+  function border({ color, width }) {
+    if (!selected) return;
+    const w = width ?? (parseFloat(selected.style.borderWidth) || 1);
+    const c = color === undefined ? (selected.style.borderColor || '#6b7280') : color;
+    rememberColor(color);
+    blockStyle({ border: w && c ? `${w}px solid ${c}` : null });
+  }
+  function toggleShadow() {
+    if (selected) blockStyle({ 'box-shadow': selected.style.boxShadow ? null : '0 4px 16px rgba(0,0,0,.15)' });
+  }
 
   // ---- fit, reload, scroll restore ----
   function fit() { document.documentElement.style.setProperty('--ppt-zoom', String(Math.min(1, (innerWidth - 48) / G.W))); lastKey = ''; }

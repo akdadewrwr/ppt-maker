@@ -223,6 +223,86 @@ class QuoteTests(ServerCase):
         self.assertIn("quote:「在幻灯片上指给 agent 看，而不是", s)
 
 
+class HistoryTests(ServerCase):
+    def put(self, html, label="改背景色"):
+        ver = json.loads(self.req("GET", "/api/state?t=tok")[1])["version"]
+        return self.req("PUT", "/api/deck?t=tok", {"version": ver, "html": html, "label": label})
+
+    def deck_text(self):
+        return (self.deck / "deck.html").read_text(encoding="utf-8")
+
+    def test_put_records_user_snapshot(self):
+        a = self.deck_text()
+        self.assertEqual(self.put(a.replace("副标题", "B"))[0], 200)
+        h = self.srv.history
+        self.assertEqual((h.rows[-1]["by"], h.rows[-1]["label"]), ("user", "改背景色"))
+        s = json.loads(self.req("GET", "/api/state?t=tok")[1])["history"]
+        self.assertEqual((s["canUndo"], s["undoLabel"], s["canRedo"]), (True, "改背景色", False))
+        self.assertEqual(inbox(self.deck)[-1]["label"], "改背景色")
+        self.assertIn("改背景色", server.summary(inbox(self.deck)[-1]))
+
+    def test_external_write_recorded_as_claude(self):
+        server.reply(self.deck, "e3", ack=True)
+        (self.deck / "deck.html").write_text(self.deck_text().replace("副标题", "C"), encoding="utf-8")
+        _time.sleep(1.2)  # watcher runs every 0.5 s
+        self.assertEqual((self.srv.history.rows[-1]["by"], self.srv.history.rows[-1]["label"]), ("claude", "Claude 处理 #e3"))
+
+    def test_undo_redo_roundtrip(self):
+        a = self.deck_text()
+        self.put(a.replace("副标题", "B"))
+        b = self.deck_text()
+        self.assertEqual(self.req("POST", "/api/undo?t=tok", {})[0], 200)
+        self.assertEqual(self.deck_text(), a)
+        ev = inbox(self.deck)[-1]
+        self.assertEqual((ev["type"], ev["op"], ev["label"]), ("edit", "undo", "撤销了 改背景色"))
+        self.assertEqual(self.req("POST", "/api/redo?t=tok", {})[0], 200)
+        self.assertEqual(self.deck_text(), b)
+        self.req("POST", "/api/undo?t=tok", {})
+        self.put(a.replace("副标题", "C"), "改字")          # a new change drops the redo branch
+        self.assertEqual(self.req("POST", "/api/redo?t=tok", {})[0], 409)
+
+    def test_nothing_to_undo_and_token(self):
+        self.assertEqual(self.req("POST", "/api/undo?t=tok", {})[0], 409)
+        self.assertEqual(self.req("POST", "/api/undo", {})[0], 403)
+        self.assertEqual(self.req("POST", "/api/redo?t=no", {})[0], 403)
+
+    def test_undo_not_rerecorded_by_watcher(self):
+        self.put(self.deck_text().replace("副标题", "B"))
+        self.req("POST", "/api/undo?t=tok", {})
+        n = len(self.srv.history.rows)
+        _time.sleep(1.2)
+        self.assertEqual(len(self.srv.history.rows), n)
+
+    def test_cap(self):
+        old = server.HISTORY_MAX
+        server.HISTORY_MAX = 5
+        try:
+            for i in range(8):
+                self.put(self.deck_text().replace("</body>", f"<!--{i}--></body>"), f"第{i}步")
+            h = self.srv.history
+            self.assertEqual(len(h.rows), 5)
+            self.assertEqual(len(list(h.dir.glob("*.html"))), 5)
+            self.assertEqual(h.rows[-1]["label"], "第7步")
+        finally:
+            server.HISTORY_MAX = old
+
+    def test_snapshot_failure_does_not_block_save(self):
+        self.srv.history.dir = self.deck / "missing" / "dir"
+        self.assertEqual(self.put(self.deck_text().replace("副标题", "B"))[0], 200)
+        self.assertIn(">B<", self.deck_text())
+        s = json.loads(self.req("GET", "/api/state?t=tok")[1])["history"]
+        self.assertEqual((s["ok"], s["canUndo"]), (False, False))
+
+    def test_restart_keeps_position(self):
+        a = self.deck_text()
+        self.put(a.replace("副标题", "B"))
+        self.req("POST", "/api/undo?t=tok", {})
+        with server.LOCK:
+            h2 = server.History(self.deck)
+        self.assertEqual((h2.cur, len(h2.rows)), (self.srv.history.cur, len(self.srv.history.rows)))
+        self.assertTrue(h2.info()["canRedo"])
+
+
 class CliTests(ServerCase):
     def test_reply_drives_status(self):
         server.reply(self.deck, "e1", ack=True)

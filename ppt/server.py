@@ -20,6 +20,8 @@ FIELD_TYPES = {"type": str, "re": str, "slide": int, "slide_id": str, "rect": di
                "blocks": list, "text": str, "issues": list, "quote": dict}
 HEARTBEAT_SECS = 10
 ONLINE_SECS = 30
+HISTORY_MAX = 200
+WATCH_SECS = 0.5
 LOCK = threading.Lock()
 INJECT = ('<link rel="stylesheet" href="/_ppt/editor.css" data-ppt>'
           '<script data-ppt>window.PPT={token:%s,version:%s}</script>'
@@ -133,7 +135,7 @@ def state(deck):
 
 def summary(e):
     blocks = e.get("blocks") or ([e["block"]] if e.get("block") else [])
-    text = e.get("text") or (json.dumps(e["issues"], ensure_ascii=False) if e.get("issues") else "")
+    text = e.get("text") or e.get("label") or (json.dumps(e["issues"], ensure_ascii=False) if e.get("issues") else "")
     re_ = f" re:{e['re']}" if e.get("re") else ""
     quote = f" quote:「{e['quote']['text'][:20]}」" if e.get("quote") else ""
     line = f"{e['id']} {e['type']}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote} {text[:60]}"
@@ -169,6 +171,98 @@ def tail(deck, emit, stop=lambda: False, interval=0.5):
 
 def reply(deck, eid, text="", ack=False):
     append_jsonl(runtime(deck) / "outbox.jsonl", {"re": eid, "text": text, "ack": ack, "ts": now_iso()})
+
+
+def claude_label(deck):
+    working = [i for i, s in statuses(deck).items() if s == "processing"]
+    return f"Claude 处理 #{working[-1]}" if working else "Claude 修改"
+
+
+class History:
+    """Snapshots of deck.html: .ppt/history/NNNN.html + index.jsonl + cur. Callers hold LOCK."""
+
+    def __init__(self, deck):
+        self.deck = Path(deck)
+        self.dir = runtime(deck) / "history"
+        self.dir.mkdir(exist_ok=True)
+        self.rows = read_jsonl(self.dir / "index.jsonl")
+        try:
+            self.cur = min(int((self.dir / "cur").read_text(encoding="utf-8")), len(self.rows) - 1)
+        except (OSError, ValueError):
+            self.cur = len(self.rows) - 1
+        self.ok = True
+        if self.cur < 0 or self._read(self.cur) != (self.deck / "deck.html").read_bytes():
+            self.record("claude", "外部修改")  # changed while the server was not running
+        self.known = deck_version(self.deck)
+
+    def _file(self, i):
+        return self.dir / f"{self.rows[i]['n']:04d}.html"
+
+    def _read(self, i):
+        try:
+            return self._file(i).read_bytes()
+        except OSError:
+            return None
+
+    def _save_meta(self):
+        (self.dir / "index.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in self.rows), encoding="utf-8")
+        (self.dir / "cur").write_text(str(self.cur), encoding="utf-8")
+
+    def record(self, by, label):
+        self.known = deck_version(self.deck)
+        try:
+            for i in range(self.cur + 1, len(self.rows)):  # a new change drops the redo branch
+                self._file(i).unlink(missing_ok=True)
+            self.rows = self.rows[:self.cur + 1]
+            n = self.rows[-1]["n"] + 1 if self.rows else 1
+            (self.dir / f"{n:04d}.html").write_bytes((self.deck / "deck.html").read_bytes())
+            self.rows.append({"n": n, "by": by, "label": label, "ts": now_iso()})
+            while len(self.rows) > HISTORY_MAX:
+                self._file(0).unlink(missing_ok=True)
+                self.rows.pop(0)
+            self.cur = len(self.rows) - 1
+            self._save_meta()
+            self.ok = True
+        except OSError as e:  # never block a save because history could not be written
+            self.ok = False
+            print(f"history: snapshot failed: {e}", file=sys.stderr)
+
+    def sync(self):
+        """Record a write made outside the server (Claude editing deck.html)."""
+        if deck_version(self.deck) != self.known:
+            self.record("claude", claude_label(self.deck))
+
+    def step(self, d):
+        """Undo (d=-1) or redo (d=+1); returns the row undone/redone, or None."""
+        j = self.cur + d
+        if not self.ok or not 0 <= j < len(self.rows):
+            return None
+        data = self._read(j)
+        if data is None:
+            return None
+        row = self.rows[self.cur] if d < 0 else self.rows[j]
+        (self.deck / "deck.html").write_bytes(data)
+        self.known = deck_version(self.deck)  # our own write: the watcher must not record it again
+        self.cur = j
+        self._save_meta()
+        return row
+
+    def info(self):
+        can_u = self.ok and self.cur > 0
+        can_r = self.ok and self.cur < len(self.rows) - 1
+        return {"ok": self.ok, "canUndo": can_u, "canRedo": can_r,
+                "undoLabel": self.rows[self.cur]["label"] if can_u else "",
+                "redoLabel": self.rows[self.cur + 1]["label"] if can_r else ""}
+
+
+def watch(srv):
+    while not srv.stopped.wait(WATCH_SECS):
+        with LOCK:
+            try:
+                srv.history.sync()
+            except OSError:
+                pass  # deck.html briefly missing while an editor replaces it
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -220,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
             html = html[:i] + inj + html[i:] if i >= 0 else html + inj
             return self.send(200, html, "text/html; charset=utf-8")
         if path == "/api/state":
-            return self.send(200, state(deck))
+            return self.send(200, {**state(deck), "history": self.server.history.info()})
         if path == "/api/deck":  # raw file text: the page saves edits into this, not into the live DOM
             with LOCK:
                 return self.send(200, {"version": deck_version(deck), "html": (deck / "deck.html").read_text(encoding="utf-8")})
@@ -241,6 +335,15 @@ class Handler(BaseHTTPRequestHandler):
         url = self.guard(need_token=True)
         if not url:
             return
+        if url.path in ("/api/undo", "/api/redo"):
+            kind = url.path[len("/api/"):]
+            with LOCK:
+                row = self.server.history.step(-1 if kind == "undo" else 1)
+                if not row:
+                    return self.send(409, {"error": f"nothing to {kind}"})
+                verb = "撤销了" if kind == "undo" else "重做了"
+                add_event(self.server.deck, {"type": "edit", "op": kind, "label": f"{verb} {row['label']}"})
+                return self.send(200, {"version": deck_version(self.server.deck)})
         if url.path != "/api/event":
             return self.send(404, {"error": "not found"})
         try:
@@ -271,13 +374,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(409, {"version": cur})
             (deck / "deck.html").write_bytes(html.encode("utf-8"))
             new = deck_version(deck)
-            add_event(deck, {"type": "edit", "slide_id": body.get("slide_id"), "block": body.get("block")})
+            label = str(body.get("label") or "编辑")[:200]
+            self.server.history.record("user", label)
+            add_event(deck, {"type": "edit", "slide_id": body.get("slide_id"), "block": body.get("block"), "label": label})
         self.send(200, {"version": new})
 
 
 class Server(ThreadingHTTPServer):
     allow_reuse_address = False  # ponytail: on Windows reuse lets two servers share one port
     daemon_threads = True
+
+    def server_close(self):
+        if hasattr(self, "stopped"):  # also called by socketserver when bind fails, before make_server set it
+            self.stopped.set()
+        super().server_close()
 
 
 def make_server(deck, port=8765, token=None, tries=20):
@@ -296,6 +406,10 @@ def make_server(deck, port=8765, token=None, tries=20):
             tf.write_text(secrets.token_urlsafe(16), encoding="utf-8")
         token = tf.read_text(encoding="utf-8").strip()
     srv.token = token
+    srv.stopped = threading.Event()
+    with LOCK:
+        srv.history = History(srv.deck)
+    threading.Thread(target=watch, args=(srv,), daemon=True).start()
     return srv
 
 

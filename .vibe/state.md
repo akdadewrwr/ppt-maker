@@ -8,6 +8,7 @@
 ## 改动文件
 - （本轮无代码改动）git 合并与分支清理
 ## 当前 blocker
-- 等用户选下一个子项目
+- 子项目 2「基础编辑」spec 已写：docs/superpowers/specs/2026-10-14-ppt-maker-basic-editing-design.md，等用户审阅
 ## 下一步
-- 候选：导出 pptx（推荐）/ 知识库接入 / 手绘草图 / Codex 接入；先 brainstorm 再写 spec
+- 顺序：基础编辑 → 手绘草图 → 知识库；导出 pptx 放最后
+- 已定：页面直接改；顶栏+浮动栏；颜色完全自由；撤销含 Claude 修改（快照）；块吸网格+浮动对象自由；图标=Lucide 内置+让 Claude 画；方案 A（页面在文件原文上改整份写回）；1 份 spec 2 份计划（2a 选中/格式/样式/拖拉/撤销/增删页，2b 浮动对象）；浏览器测试脚本入库为 tests/e2e.mjs

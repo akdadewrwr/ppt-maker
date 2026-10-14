@@ -12,10 +12,11 @@
 - 回传=方案1：Python 标准库本地服务 → .ppt/inbox.jsonl → Claude Code Monitor 唤醒；页面 SSE 自动刷新
 - 第 1 节架构已确认：deck.html 纯内容（服务端注入编辑层）；server.py 零依赖；改字带版本号防冲突；v1 不做知识库/导出/草图
 - 第 2 节格式已确认：section.slide/div.block 固定 id；grid-area 定位；颜色字体只用 #theme 变量；真文字；单文件离线
+- 第 3 节流程已确认：server.py 三模式（serve/--tail/--reply）；inbox.jsonl 事件含 slide/cells/blocks/text/shot；回执气泡可反问；改字带版本号存回
 - 仓库：git@main → https://github.com/akdadewrwr/ppt-maker.git
 ## 改动文件
 - .vibe/state.md；git init + 首次推送
 ## 当前 blocker
-- 等用户确认设计第 3 节（事件流程）
+- 等用户确认设计第 4 节（出错处理）
 ## 下一步
 - 分段设计（1架构 2数据格式 3事件流 4错误处理 5测试） → 写 spec → writing-plans

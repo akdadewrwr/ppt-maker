@@ -1,15 +1,16 @@
 ## 上一轮完成
-- 设计 5 节全部确认；spec 已写好并推送
+- 实施计划已写好并推送；spec 小改：SSE→每秒轮询 /api/state
 ## 关键结论
-- spec：docs/superpowers/specs/2026-10-14-ppt-maker-core-loop-design.md
-- 子项目 1 = 核心闭环：/ppt → 框选+意图/改字 → inbox.jsonl → Monitor 唤醒 Claude → 改 deck.html → SSE 刷新 → 回执气泡
-- 零依赖 Python 服务（serve / --tail / --reply [--ack]）；16×9 网格；口令+Host 校验
-- 后续子项目：导出 pptx → 知识库 → 手绘 → Codex
+- 计划：docs/superpowers/plans/2026-10-14-ppt-maker-core-loop.md，共 6 个任务
+- T1 模板+服务骨架 / T2 事件与保存 API / T3 --tail --reply / T4 geom.js+selftest / T5 editor.js+css+截图库 / T6 /ppt 命令+端到端验收
+- 页面所有幻灯片竖向排列，按窗口宽缩放；坐标统一换算回 1280×720
+- 自动测试：15 个 unittest + selftest 14 项；editor 靠手动清单 + 端到端验收
 - 仓库：main → https://github.com/akdadewrwr/ppt-maker.git
 ## 改动文件
-- docs/superpowers/specs/2026-10-14-ppt-maker-core-loop-design.md（新）
+- docs/superpowers/plans/2026-10-14-ppt-maker-core-loop.md（新）
+- docs/superpowers/specs/2026-10-14-ppt-maker-core-loop-design.md（轮询）
 - .vibe/state.md
 ## 当前 blocker
-- 等用户审阅 spec
+- 等用户审阅计划并选执行方式（Subagent-driven / Native）
 ## 下一步
-- spec 通过 → writing-plans 写实施计划 → 用户选执行方式 → 开始写代码
+- 按选定方式从 Task 1 开始实现

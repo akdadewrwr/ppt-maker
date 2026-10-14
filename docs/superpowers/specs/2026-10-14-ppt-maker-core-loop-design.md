@@ -38,7 +38,7 @@ ppt-maker/
 | 组件 | 职责 | 不做 |
 |---|---|---|
 | deck.html | 只放内容，可直接双击放映 | 不含编辑层代码 |
-| server.py | 发 deck 时注入编辑层；接收提交写入 inbox/shots；deck 变化时通知页面刷新；`--tail`、`--reply` 两个命令行模式 | 不含任何 AI 逻辑 |
+| server.py | 发 deck 时注入编辑层；接收提交写入 inbox/shots；通过 `/api/state` 提供版本号与事件状态供页面轮询；`--tail`、`--reply` 两个命令行模式 | 不含任何 AI 逻辑 |
 | editor.js | 采集意图与改字，检查渲染问题 | 不生成内容 |
 | ppt.md | 规定格式与事件处理协议；所有生成能力在 Claude 侧 | — |
 
@@ -111,7 +111,7 @@ ppt-maker/
 2. 页面计算 rect / cells / blocks，截取选区图，带口令 POST 到服务。
 3. 服务保存截图，追加 inbox 一行。
 4. `--tail` 打印摘要，Claude 被唤醒：读事件，看截图，只改相关块。
-5. deck.html 变化，服务通过 SSE 通知页面；页面刷新并停留在原页。
+5. 页面每秒轮询 `/api/state`（版本号、心跳、事件状态、回执）；版本号变化即刷新并恢复滚动位置。（ponytail: 本机轮询比 SSE 少一套长连接代码，延迟 ≤1 秒）
 6. Claude 执行 `--reply e17 "已拆成三栏：A/B/C"`；页面在原区域旁显示气泡。Claude 没理解时可在回执里反问，用户在气泡中回答，生成一条 `answer` 事件。
 
 ### 4.4 其他

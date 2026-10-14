@@ -1,7 +1,7 @@
 // ppt-maker editor layer: injected by server.py, never saved into deck.html.
 // Every node it adds carries data-ppt (stripped on save) or lives in #ppt-ui.
 (() => {
-  const G = window.PPTGeom, TOKEN = window.PPT.token;
+  const G = window.PPTGeom, O = window.PPTOps, TOKEN = window.PPT.token;
   let version = window.PPT.version, saving = false, editing = null, drag = null, pop = null, lastKey = '';
   let replayPending = false; // a save failed offline: reload+replay once the server is back
   let lastSave = Promise.resolve();
@@ -217,30 +217,41 @@
     const { block, before } = editing;
     block.removeAttribute('contenteditable');
     editing = null;
-    if (block.innerHTML !== before) await (lastSave = saveDeck(block));
+    if (block.innerHTML !== before) await commit({ op: 'setHTML', target: block.id, args: { html: block.innerHTML }, label: `改字 ${block.id}` });
   }
   document.addEventListener('paste', (e) => { // plain text only: no foreign markup or remote images in the deck
     if (!editing || !editing.block.contains(e.target)) return;
     e.preventDefault();
     document.execCommand('insertText', false, e.clipboardData?.getData('text/plain') || '');
   });
-  async function saveDeck(block) {
-    // unsaved edits, {blockId: innerHTML}: survive reloads, server restarts and closed tabs
-    ls.set('ppt-replays', { ...ls.get('ppt-replays', {}), [block.id]: block.innerHTML });
+  // ---- direct edits: ops applied live, queued, then saved onto the file text ----
+  let chain = Promise.resolve();
+  function commit(op) {
+    if (!O.apply(document, op)) { toast('这一步没有生效（目标已不存在）'); return lastSave; }
+    ls.set('ppt-ops', [...ls.get('ppt-ops', []), op]); // survives reloads, server restarts and closed tabs
+    return (lastSave = persist());
+  }
+  function persist() { return (chain = chain.then(saveOnce)); }
+  async function saveOnce() {
+    const ops = ls.get('ppt-ops', []);
+    if (!ops.length) return;
     saving = true;
     try {
       // rebuild from the file text, not the live DOM: extensions and deck scripts must not leak into deck.html
       const raw = await (await fetch(api('/api/deck'), { cache: 'no-store' })).json();
-      if (raw.version !== version) { replayPending = true; return; } // file moved on: poll reloads when idle, edits re-apply on load
+      if (raw.version !== version) { replayPending = true; return; } // file moved on: poll reloads when idle, ops replay on load
       const doc = new DOMParser().parseFromString(raw.html, 'text/html');
-      for (const [id, html] of Object.entries(ls.get('ppt-replays', {}))) { const t = doc.getElementById(id); if (t) t.innerHTML = html; }
+      ops.forEach((op) => O.apply(doc, op));
+      const last = ops[ops.length - 1], target = last.target && document.getElementById(last.target);
       const r = await fetch(api('/api/deck'), { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ version, html: '<!doctype html>\n' + doc.documentElement.outerHTML, block: block.id, slide_id: block.closest('section.slide')?.id }) });
+        body: JSON.stringify({ version, html: '<!doctype html>\n' + doc.documentElement.outerHTML,
+          label: ops.map((o) => o.label).filter(Boolean).join('，').slice(0, 200),
+          block: last.target || last.args?.id, slide_id: target?.closest('section.slide')?.id || last.args?.slideId }) });
       if (r.status === 409) { replayPending = true; return; }
       if (!r.ok) throw new Error(String(r.status));
       version = (await r.json()).version;
-      ls.set('ppt-replays', {});
-      runLint();
+      ls.set('ppt-ops', ls.get('ppt-ops', []).slice(ops.length)); // ops committed during the await stay queued
+      runLint(true); // the user's own edits are intentional: don't send Claude to "fix" them
     } catch { replayPending = true; offline = true; render(); } // next good poll reloads and replays
     finally { saving = false; }
   }
@@ -250,21 +261,18 @@
     el('p', null, t, msg);
     if (text != null) { const ta = el('textarea', null, t); ta.value = text; ta.readOnly = true; }
   }
-  function applyReplay() { // after a 409/offline save: re-apply unsaved edits onto the fresh file by block id
-    const replays = ls.get('ppt-replays', {});
-    const missing = Object.keys(replays).filter((id) => !document.getElementById(id));
-    if (missing.length) {
-      toast('你改的块已被 Claude 删除，改动未保存，内容如下：', missing.map((id) => replays[id]).join('\n'));
-      missing.forEach((id) => delete replays[id]);
-      ls.set('ppt-replays', replays);
-    }
-    const present = Object.keys(replays).map((id) => document.getElementById(id));
-    present.forEach((b) => { b.innerHTML = replays[b.id]; });
-    if (present.length) saveDeck(present[0]);
+  function applyPending() { // after a conflict or outage: re-run unsaved ops on the fresh file
+    const ops = ls.get('ppt-ops', []);
+    if (!ops.length) return;
+    const lost = ops.filter((op) => !O.apply(document, op));
+    if (lost.length) toast(`有 ${lost.length} 步修改没有生效（目标已被删除），内容如下：`,
+      lost.map((o) => (o.op === 'setHTML' ? o.args.html.replace(/<[^>]+>/g, '') : o.label)).join('\n'));
+    ls.set('ppt-ops', ops.filter((op) => !lost.includes(op)));
+    if (lost.length < ops.length) lastSave = persist();
   }
 
   // ---- lint: the page looks at the render so Claude doesn't have to ----
-  function runLint() {
+  function runLint(silent) {
     const issues = slides().flatMap((s) => G.lint(s));
     document.querySelectorAll('.ppt-lint').forEach((n) => n.classList.remove('ppt-lint'));
     issues.forEach((i) => i.block && document.getElementById(i.block)?.classList.add('ppt-lint'));
@@ -272,7 +280,7 @@
     const seen = new Set(ls.get('ppt-lint-seen', []));
     const fresh = issues.filter((_, n) => !seen.has(keys[n]));
     ls.set('ppt-lint-seen', keys); // fixed issues drop out, so a recurrence is reported again
-    if (fresh.length) enqueue({ type: 'lint', issues: fresh });
+    if (fresh.length && !silent) enqueue({ type: 'lint', issues: fresh });
   }
-  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { applyReplay(); runLint(); });
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { applyPending(); runLint(); });
 })();

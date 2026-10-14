@@ -1,0 +1,19 @@
+/* ppt-maker editor layer — injected by server.py, never saved into deck.html */
+.slide { zoom: var(--ppt-zoom, 1); cursor: crosshair; }
+.slide [contenteditable="true"] { outline: 2px solid #2563eb; cursor: text; }
+.ppt-lint { outline: 2px dashed #dc2626 !important; outline-offset: -2px; }
+#ppt-ui { position: absolute; left: 0; top: 0; z-index: 2147483000; font: 13px/1.45 system-ui, "Microsoft YaHei", sans-serif; color: #111; }
+#ppt-ui .ppt-abs { position: absolute; }
+.ppt-status { position: fixed; top: 8px; right: 8px; padding: 4px 12px; border-radius: 999px; background: #111; color: #fff; z-index: 2147483001; }
+.ppt-status.off { background: #dc2626; }
+.ppt-sel { border: 2px dashed #2563eb; background: rgba(37, 99, 235, .08); pointer-events: none; box-sizing: border-box; }
+.ppt-pop, .ppt-bubble, .ppt-toast { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); padding: 8px; width: 320px; box-sizing: border-box; }
+.ppt-pop textarea, .ppt-bubble textarea, .ppt-toast textarea { width: 100%; box-sizing: border-box; min-height: 56px; font: inherit; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px; resize: vertical; }
+.ppt-mark { border: 2px solid #f59e0b; border-radius: 4px; pointer-events: none; box-sizing: border-box; }
+.ppt-mark.processing { border-color: #2563eb; } .ppt-mark.done { border-color: #16a34a; }
+.ppt-mark b { position: absolute; top: -22px; left: -2px; padding: 1px 6px; border-radius: 4px; color: #fff; font-weight: 500; background: #f59e0b; white-space: nowrap; }
+.ppt-mark.processing b { background: #2563eb; } .ppt-mark.done b { background: #16a34a; }
+.ppt-bubble { max-height: 280px; overflow: auto; }
+.ppt-bubble p { margin: 0 0 6px; white-space: pre-wrap; } .ppt-bubble .who { color: #6b7280; }
+.ppt-bubble .x { float: right; border: 0; background: none; cursor: pointer; font-size: 16px; line-height: 1; }
+.ppt-toast { position: fixed; left: 50%; top: 48px; transform: translateX(-50%); z-index: 2147483001; }

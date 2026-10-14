@@ -145,5 +145,46 @@ class EventTests(ServerCase):
         self.assertTrue(json.loads(self.req("GET", "/api/state?t=tok")[1])["online"])
 
 
+import time as _time
+
+
+class CliTests(ServerCase):
+    def test_reply_drives_status(self):
+        server.reply(self.deck, "e1", ack=True)
+        self.assertEqual(server.statuses(self.deck), {"e1": "processing"})
+        server.reply(self.deck, "e1", "做完了")
+        server.reply(self.deck, "e1", ack=True)           # late ack must not undo done
+        self.assertEqual(server.statuses(self.deck), {"e1": "done"})
+
+    def test_summary_one_line(self):
+        s = server.summary({"id": "e3", "type": "answer", "re": "e1", "slide_id": "s1", "blocks": ["a", "b"], "text": "第一行\n第二行" + "长" * 100})
+        self.assertTrue(s.startswith("e3 answer re:e1 slide:s1 [a,b] 第一行 第二行"))
+        self.assertNotIn("\n", s)
+        self.assertIn("[x]", server.summary({"id": "e4", "type": "edit", "slide_id": "s1", "block": "x"}))
+
+    def test_tail_catch_up_then_follow(self):
+        for t in ("旧的已完成", "旧的处理中", "旧的排队"):
+            self.req("POST", "/api/event?t=tok", {"type": "intent", "slide_id": "s-cover", "text": t})
+        server.reply(self.deck, "e1", "ok")
+        server.reply(self.deck, "e2", ack=True)
+        lines, done = [], threading.Event()
+        th = threading.Thread(target=server.tail, args=(self.deck, lines.append, done.is_set, 0.05), daemon=True)
+        th.start()
+        _time.sleep(0.3)
+        self.assertEqual([l.split()[0] for l in lines], ["e2", "e3"])
+        self.req("POST", "/api/event?t=tok", {"type": "lint", "issues": [{"block": "b", "kind": "overflow"}]})
+        _time.sleep(0.3)
+        done.set()
+        th.join(2)
+        self.assertEqual([l.split()[0] for l in lines], ["e2", "e3", "e4"])
+        self.assertTrue((self.deck / ".ppt" / "heartbeat").exists())
+
+    def test_cli_reply(self):
+        server.main(["--reply", str(self.deck), "e9", "已", "完成", "--ack"])
+        server.main(["--reply", str(self.deck), "e9", "已", "完成"])
+        rows = server.read_jsonl(self.deck / ".ppt" / "outbox.jsonl")
+        self.assertEqual([(r["re"], r["text"], r["ack"]) for r in rows], [("e9", "已 完成", True), ("e9", "已 完成", False)])
+
+
 if __name__ == "__main__":
     unittest.main()

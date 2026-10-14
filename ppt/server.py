@@ -122,6 +122,38 @@ def state(deck):
             "events": events}
 
 
+def summary(e):
+    blocks = e.get("blocks") or ([e["block"]] if e.get("block") else [])
+    text = e.get("text") or (json.dumps(e["issues"], ensure_ascii=False) if e.get("issues") else "")
+    re_ = f" re:{e['re']}" if e.get("re") else ""
+    line = f"{e['id']} {e['type']}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}] {text[:60]}"
+    return " ".join(line.split())
+
+
+def tail(deck, emit, stop=lambda: False, interval=0.5):
+    """Emit every unfinished event, then follow the inbox. Heartbeat lets the page show 'Claude online'."""
+    rt = runtime(deck)
+    inbox, hb = rt / "inbox.jsonl", rt / "heartbeat"
+    events, st = read_jsonl(inbox), statuses(deck)
+    for e in events:
+        if e.get("type") in EVENT_TYPES and st.get(e.get("id")) != "done":
+            emit(summary(e))
+    seen, beat = len(events), 0.0
+    while not stop():
+        if time.time() - beat >= HEARTBEAT_SECS:
+            hb.write_text(now_iso(), encoding="utf-8")
+            beat = time.time()
+        events = read_jsonl(inbox)
+        for e in events[seen:]:
+            emit(summary(e))
+        seen = len(events)
+        time.sleep(interval)
+
+
+def reply(deck, eid, text="", ack=False):
+    append_jsonl(runtime(deck) / "outbox.jsonl", {"re": eid, "text": text, "ack": ack, "ts": now_iso()})
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -243,12 +275,21 @@ def main(argv=None):
     ap.add_argument("rest", nargs="*", help="--reply: <event_id> [text]")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--tail", action="store_true", help="print pending/new events (run under Claude Code Monitor)")
+    ap.add_argument("--reply", action="store_true", help="write a reply: <deck> <event_id> [text]")
+    ap.add_argument("--ack", action="store_true", help="with --reply: mark the event as being processed")
     a = ap.parse_args(argv)
     deck = Path(a.deck).resolve()
     if not (deck / "deck.html").is_file():
         ap.error(f"{deck / 'deck.html'} not found")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if a.reply:
+        if not a.rest:
+            ap.error("--reply needs an event id")
+        return reply(deck, a.rest[0], " ".join(a.rest[1:]), a.ack)
+    if a.tail:
+        return tail(deck, lambda s: print(s, flush=True))
     srv = make_server(deck, a.port)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.token}"
     print(f"ppt-maker serving {deck.name} at {url}", flush=True)

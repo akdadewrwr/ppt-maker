@@ -87,7 +87,7 @@ ppt-maker/
 ### 4.1 启动 `/ppt <名字或主题>`
 
 1. 若 `decks/<名字>/` 不存在，Claude 按主题写初稿 deck.html。
-2. Claude 后台启动服务，端口被占用时自动顺延；服务生成随机口令，打印 `http://127.0.0.1:<端口>/?t=<口令>`；Claude 打开该 URL。
+2. Claude 后台启动服务，端口被占用时自动顺延；服务使用该 deck 的随机口令（首次启动生成，存于 `.ppt/token`，重启不变，已打开的页面可自动恢复），打印 `http://127.0.0.1:<端口>/?t=<口令>`；Claude 打开该 URL。
 3. Claude 用 Monitor 运行 `--tail`。
 4. Claude 检查 inbox 中没有回执的事件，按顺序补处理。
 

@@ -6,9 +6,9 @@
   let replayPending = false; // a save failed offline: reload+replay once the server is back
   const api = (p) => `${p}?t=${encodeURIComponent(TOKEN)}`;
   const slides = () => [...document.querySelectorAll('section.slide')];
-  const ls = {
-    get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-    set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
+  const ls = { // keys are scoped by token: one port can serve different decks over time
+    get: (k, d) => { try { return JSON.parse(localStorage.getItem(`${k}:${TOKEN}`)) ?? d; } catch { return d; } },
+    set: (k, v) => { try { localStorage.setItem(`${k}:${TOKEN}`, JSON.stringify(v)); return true; } catch { return false; } },
   };
   function el(tag, cls, parent, text) {
     const e = document.createElement(tag);
@@ -50,11 +50,11 @@
     if (flushing) return;
     flushing = true;
     try {
-      let q = ls.get('ppt-queue', []);
-      while (q.length) {
+      let q;
+      while ((q = ls.get('ppt-queue', [])).length) {
         const r = await fetch(api('/api/event'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q[0]) });
         if (!r.ok && r.status !== 400) break; // 400 = malformed, drop it; anything else retry later
-        q = q.slice(1); ls.set('ppt-queue', q);
+        ls.set('ppt-queue', ls.get('ppt-queue', []).slice(1)); // re-read: events may have been queued during the await
       }
     } catch { /* offline: poll() will retry */ } finally { flushing = false; render(); }
   }
@@ -65,7 +65,8 @@
       const r = await fetch(api('/api/state'), { cache: 'no-store' });
       if (!r.ok) throw new Error(String(r.status));
       state = await r.json(); offline = false; online = state.online;
-      if (!editing && !saving && (state.version !== version || replayPending)) return reload();
+      const typing = drag || pop || [...ui.querySelectorAll('textarea')].some((t) => t.value.trim() || t === document.activeElement);
+      if (!editing && !saving && !typing && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing
       flush();
     } catch { offline = true; }
     render();
@@ -191,27 +192,29 @@
     editing = null;
     if (block.innerHTML !== before) await saveDeck(block);
   }
-  function serialize() {
-    const doc = document.documentElement.cloneNode(true);
-    doc.querySelectorAll('[data-ppt]').forEach((n) => n.remove());
-    doc.querySelectorAll('[contenteditable]').forEach((n) => n.removeAttribute('contenteditable'));
-    doc.querySelectorAll('.ppt-lint').forEach((n) => n.classList.remove('ppt-lint'));
-    doc.style.removeProperty('--ppt-zoom');
-    if (!doc.getAttribute('style')) doc.removeAttribute('style');
-    return '<!doctype html>\n' + doc.outerHTML;
-  }
+  document.addEventListener('paste', (e) => { // plain text only: no foreign markup or remote images in the deck
+    if (!editing || !editing.block.contains(e.target)) return;
+    e.preventDefault();
+    document.execCommand('insertText', false, e.clipboardData?.getData('text/plain') || '');
+  });
   async function saveDeck(block) {
-    const replay = JSON.stringify({ id: block.id, html: block.innerHTML });
+    // unsaved edits, {blockId: innerHTML}: survive reloads, server restarts and closed tabs
+    ls.set('ppt-replays', { ...ls.get('ppt-replays', {}), [block.id]: block.innerHTML });
     saving = true;
     try {
+      // rebuild from the file text, not the live DOM: extensions and deck scripts must not leak into deck.html
+      const raw = await (await fetch(api('/api/deck'), { cache: 'no-store' })).json();
+      if (raw.version !== version) { saving = false; return reload(); } // file moved on: reload, edits re-apply on load
+      const doc = new DOMParser().parseFromString(raw.html, 'text/html');
+      for (const [id, html] of Object.entries(ls.get('ppt-replays', {}))) { const t = doc.getElementById(id); if (t) t.innerHTML = html; }
       const r = await fetch(api('/api/deck'), { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ version, html: serialize(), block: block.id, slide_id: block.closest('section.slide')?.id }) });
-      if (r.status === 409) { sessionStorage.setItem('ppt-replay', replay); saving = false; return reload(); }
+        body: JSON.stringify({ version, html: '<!doctype html>\n' + doc.documentElement.outerHTML, block: block.id, slide_id: block.closest('section.slide')?.id }) });
+      if (r.status === 409) { saving = false; return reload(); }
       if (!r.ok) throw new Error(String(r.status));
       version = (await r.json()).version;
-      sessionStorage.removeItem('ppt-replay');
+      ls.set('ppt-replays', {});
       runLint();
-    } catch { sessionStorage.setItem('ppt-replay', replay); replayPending = true; offline = true; render(); } // next good poll reloads and replays
+    } catch { replayPending = true; offline = true; render(); } // next good poll reloads and replays
     finally { saving = false; }
   }
   function toast(msg, text) {
@@ -220,14 +223,17 @@
     el('p', null, t, msg);
     if (text != null) { const ta = el('textarea', null, t); ta.value = text; ta.readOnly = true; }
   }
-  function applyReplay() { // after a 409/offline save: re-apply the user's edit onto the fresh file by block id
-    const raw = sessionStorage.getItem('ppt-replay');
-    if (!raw) return;
-    const { id, html } = JSON.parse(raw);
-    const b = document.getElementById(id);
-    if (!b) { sessionStorage.removeItem('ppt-replay'); return toast('你改的那一块已被 Claude 删除，改动未保存，内容如下：', html); }
-    b.innerHTML = html;
-    saveDeck(b);
+  function applyReplay() { // after a 409/offline save: re-apply unsaved edits onto the fresh file by block id
+    const replays = ls.get('ppt-replays', {});
+    const missing = Object.keys(replays).filter((id) => !document.getElementById(id));
+    if (missing.length) {
+      toast('你改的块已被 Claude 删除，改动未保存，内容如下：', missing.map((id) => replays[id]).join('\n'));
+      missing.forEach((id) => delete replays[id]);
+      ls.set('ppt-replays', replays);
+    }
+    const present = Object.keys(replays).map((id) => document.getElementById(id));
+    present.forEach((b) => { b.innerHTML = replays[b.id]; });
+    if (present.length) saveDeck(present[0]);
   }
 
   // ---- lint: the page looks at the render so Claude doesn't have to ----

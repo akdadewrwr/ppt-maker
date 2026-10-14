@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>标题</title>
+<style id="theme">
+  :root { --bg:#ffffff; --fg:#1a1a1a; --muted:#6b7280; --accent:#2563eb; --font:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif; }
+</style>
+<style id="base">
+  body { margin:0; background:#e5e7eb; }
+  .slide { width:1280px; height:720px; margin:24px auto; display:grid;
+           grid-template-columns:repeat(16,minmax(0,1fr)); grid-template-rows:repeat(9,minmax(0,1fr));
+           background:var(--bg); color:var(--fg); font-family:var(--font); box-shadow:0 2px 12px rgba(0,0,0,.12); position:relative; }
+  .block { box-sizing:border-box; padding:8px; min-width:0; min-height:0; }
+  .block.grid { display:grid; gap:8px; }
+  @media print { body { background:none; } .slide { margin:0; box-shadow:none; break-after:page; } }
+</style>
+</head><body>
+<section class="slide" id="s-cover">
+  <div class="block" id="b-cover-title" style="grid-area:4/2/6/16"><h1 style="font-size:56px;margin:0;color:var(--accent)">标题</h1></div>
+  <div class="block" id="b-cover-sub" style="grid-area:6/2/7/16"><p style="font-size:24px;margin:0;color:var(--muted)">副标题</p></div>
+</section>
+</body></html>

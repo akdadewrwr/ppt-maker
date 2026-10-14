@@ -204,6 +204,25 @@ class ReviewFixTests(ServerCase):
         self.assertEqual(self.req("GET", "/api/deck")[0], 403)
 
 
+class QuoteTests(ServerCase):
+    def test_quote_intent_stored_without_shot(self):
+        q = {"text": "副标题", "before": "", "after": ""}
+        ev = {"type": "intent", "slide_id": "s-cover", "blocks": ["b-cover-sub"], "text": "更正式", "quote": q}
+        self.assertEqual(self.req("POST", "/api/event?t=tok", ev)[0], 200)
+        stored = inbox(self.deck)[-1]
+        self.assertEqual(stored["quote"], q)
+        self.assertNotIn("shot", stored)
+
+    def test_bad_quote_rejected(self):
+        for q in ("副标题", {"text": 5}, {"before": "x"}, {"text": "x" * 4001}):
+            self.assertEqual(self.req("POST", "/api/event?t=tok", {"type": "intent", "quote": q})[0], 400, q)
+
+    def test_summary_shows_quote(self):
+        s = server.summary({"id": "e1", "type": "intent", "slide_id": "s1", "blocks": ["b"], "text": "改正式",
+                            "quote": {"text": "在幻灯片上指给 agent 看，而不是说给它听"}})
+        self.assertIn("quote:「在幻灯片上指给 agent 看，而不是", s)
+
+
 class CliTests(ServerCase):
     def test_reply_drives_status(self):
         server.reply(self.deck, "e1", ack=True)

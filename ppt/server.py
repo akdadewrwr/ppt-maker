@@ -17,7 +17,7 @@ MAX_SHOT = 5 * 1024 * 1024
 MAX_TEXT = 4000
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
 FIELD_TYPES = {"type": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
-               "blocks": list, "text": str, "issues": list}
+               "blocks": list, "text": str, "issues": list, "quote": dict}
 HEARTBEAT_SECS = 10
 ONLINE_SECS = 30
 LOCK = threading.Lock()
@@ -75,6 +75,10 @@ def clean_event(body):
     bad = [k for k, t in FIELD_TYPES.items() if k in ev and not isinstance(ev[k], t)]
     if bad or not all(isinstance(b, str) for b in ev.get("blocks", [])):
         raise ValueError(f"bad field types: {bad or ['blocks']}")
+    q = ev.get("quote")
+    if q is not None and not (isinstance(q.get("text"), str) and q["text"] and len(q["text"]) <= MAX_TEXT
+                              and all(isinstance(q.get(k, ""), str) for k in ("before", "after"))):
+        raise ValueError("bad quote")
     if len(str(ev.get("text", ""))) > MAX_TEXT:
         raise ValueError("text too long")
     shot = None
@@ -131,7 +135,8 @@ def summary(e):
     blocks = e.get("blocks") or ([e["block"]] if e.get("block") else [])
     text = e.get("text") or (json.dumps(e["issues"], ensure_ascii=False) if e.get("issues") else "")
     re_ = f" re:{e['re']}" if e.get("re") else ""
-    line = f"{e['id']} {e['type']}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}] {text[:60]}"
+    quote = f" quote:「{e['quote']['text'][:20]}」" if e.get("quote") else ""
+    line = f"{e['id']} {e['type']}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote} {text[:60]}"
     return " ".join(line.split())
 
 

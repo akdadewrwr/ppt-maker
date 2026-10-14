@@ -15,6 +15,7 @@ argument-hint: <deck 名字或主题>
 摘要格式：`e17 intent slide:s-intro [b-right,b-r1] 文字…`。完整内容在 `decks/<名字>/.ppt/inbox.jsonl`，按 id 查。
 - 处理 intent / answer / lint 之前先标记：`python ppt/server.py --reply "decks/<名字>" <id> --ack`
 - **intent**：有 `shot` 就用 Read 看截图（路径相对 deck 目录）。先重新读 deck.html，再只改 `blocks` 列出的块（第一个是最内层）；`blocks` 为空时按 `cells`（列范围/行范围）在该区域新建块。不动无关块。
+- **intent 带 `quote`**（用户在改字模式下选中文字后右键发来的）：只改这段原文。在 `blocks[0]` 里找 `quote.text`；出现多次时用 `quote.before` / `quote.after` 定位。只替换这一处，块里其他内容一律不动；没有截图，也不用看。原文已找不到时，在回执里问用户，不要猜。
 - **answer**：`re` 指向原 intent；结合原意图、你之前的回执和这条回答继续改。
 - **lint**：修 `issues`：overflow → 精简文字、减小字号或扩大 grid-area；overlap → 调整 grid-area；missing-id / duplicate-id → 补或改 id。同一块同一问题最多自动修 2 次，之后只回执说明，让用户决定。
 - **edit**：用户直接改了某块。无需动作、无需回执；下次改文件前重新读。

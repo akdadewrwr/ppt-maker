@@ -4,6 +4,7 @@
   const G = window.PPTGeom, TOKEN = window.PPT.token;
   let version = window.PPT.version, saving = false, editing = null, drag = null, pop = null, lastKey = '';
   let replayPending = false; // a save failed offline: reload+replay once the server is back
+  let lastSave = Promise.resolve();
   const api = (p) => `${p}?t=${encodeURIComponent(TOKEN)}`;
   const slides = () => [...document.querySelectorAll('section.slide')];
   const ls = { // keys are scoped by token: one port can serve different decks over time
@@ -144,11 +145,15 @@
       if (!b || !slide.contains(b)) { box.remove(); return; }
       r = G.elementRect(sr, b);
     }
-    const cr = G.slideToClient(sr, r);
+    openPop(slide, r, box, `第 ${slides().indexOf(slide) + 1} 页 · 网格 ${G.rectToCells(r)}`, (text) => submitIntent(slide, r, text));
+  });
+
+  function openPop(slide, r, box, label, onSend) {
+    const cr = G.slideToClient(slide.getBoundingClientRect(), r);
     place(box, cr);
     const node = el('div', 'ppt-abs ppt-pop', ui);
     place(node, panelBeside(cr, false));
-    el('div', 'who', node, `第 ${slides().indexOf(slide) + 1} 页 · 网格 ${G.rectToCells(r)}`);
+    el('div', 'who', node, label);
     const ta = el('textarea', null, node); ta.placeholder = '想怎么改这里？Enter 发送 · Shift+Enter 换行 · Esc 取消';
     pop = { box, node };
     setTimeout(() => ta.focus());
@@ -159,8 +164,30 @@
       const text = ta.value.trim();
       if (!text) return;
       closePop();
-      submitIntent(slide, r, text);
+      onSend(text);
     };
+  }
+
+  // ---- text selection in edit mode + right-click: change just that text, no screenshot ----
+  document.addEventListener('contextmenu', (e) => {
+    const sel = getSelection();
+    const block = editing?.block;
+    if (!block || !sel.rangeCount || sel.isCollapsed || !block.contains(sel.anchorNode) || !block.contains(sel.focusNode)) return;
+    const range = sel.getRangeAt(0), quoted = range.toString();
+    if (!quoted.trim()) return;
+    e.preventDefault();
+    const pre = document.createRange(); pre.selectNodeContents(block); pre.setEnd(range.startContainer, range.startOffset);
+    const full = block.textContent, at = pre.toString().length;
+    // before/after pin down which occurrence when the same text appears twice in the block
+    const quote = { text: quoted, before: full.slice(Math.max(0, at - 20), at), after: full.slice(at + quoted.length, at + quoted.length + 20) };
+    const slide = block.closest('section.slide'), sr = slide.getBoundingClientRect(), qr = range.getBoundingClientRect();
+    const r = G.clientToSlide(sr, qr.left, qr.top, qr.right, qr.bottom);
+    const short = quoted.length > 24 ? quoted.slice(0, 24) + '…' : quoted;
+    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `改这段：「${short}」`, async (text) => {
+      await lastSave; // the user's own typing must be in deck.html before Claude reads it
+      enqueue({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
+                cells: G.rectToCells(r), blocks: [block.id], text, quote });
+    });
   });
 
   async function submitIntent(slide, r, text) {
@@ -190,7 +217,7 @@
     const { block, before } = editing;
     block.removeAttribute('contenteditable');
     editing = null;
-    if (block.innerHTML !== before) await saveDeck(block);
+    if (block.innerHTML !== before) await (lastSave = saveDeck(block));
   }
   document.addEventListener('paste', (e) => { // plain text only: no foreign markup or remote images in the deck
     if (!editing || !editing.block.contains(e.target)) return;
@@ -204,12 +231,12 @@
     try {
       // rebuild from the file text, not the live DOM: extensions and deck scripts must not leak into deck.html
       const raw = await (await fetch(api('/api/deck'), { cache: 'no-store' })).json();
-      if (raw.version !== version) { saving = false; return reload(); } // file moved on: reload, edits re-apply on load
+      if (raw.version !== version) { replayPending = true; return; } // file moved on: poll reloads when idle, edits re-apply on load
       const doc = new DOMParser().parseFromString(raw.html, 'text/html');
       for (const [id, html] of Object.entries(ls.get('ppt-replays', {}))) { const t = doc.getElementById(id); if (t) t.innerHTML = html; }
       const r = await fetch(api('/api/deck'), { method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ version, html: '<!doctype html>\n' + doc.documentElement.outerHTML, block: block.id, slide_id: block.closest('section.slide')?.id }) });
-      if (r.status === 409) { saving = false; return reload(); }
+      if (r.status === 409) { replayPending = true; return; }
       if (!r.ok) throw new Error(String(r.status));
       version = (await r.json()).version;
       ls.set('ppt-replays', {});

@@ -44,6 +44,32 @@
       .map((b) => b.id);
   }
 
+  function gridOf(el) { // the block's grid lines; derived from layout when Claude used spans or no inline grid-area
+    const s = el.style, n = (v) => parseInt(v, 10);
+    const g = { r1: n(s.gridRowStart), c1: n(s.gridColumnStart), r2: n(s.gridRowEnd), c2: n(s.gridColumnEnd) };
+    if ([g.r1, g.c1, g.r2, g.c2].every(Number.isFinite) && !/span/.test(s.gridArea)) return g;
+    const [cols, rows] = rectToCells(elementRect(el.closest('section.slide').getBoundingClientRect(), el)).split('/');
+    const [c1, c2] = cols.split('-').map(Number), [r1, r2] = rows.split('-').map(Number);
+    return { r1, c1, r2: r2 + 1, c2: c2 + 1 };
+  }
+
+  function dragGrid(g, dx, dy, handle) { // dx/dy in canvas px; snaps to whole cells, keeps >= 1x1 and inside the grid
+    const dc = Math.round(dx / (W / COLS)), dr = Math.round(dy / (H / ROWS));
+    let { r1, c1, r2, c2 } = g;
+    if (handle === 'move') {
+      const h = r2 - r1, w = c2 - c1;
+      r1 = clamp(r1 + dr, 1, ROWS + 1 - h); c1 = clamp(c1 + dc, 1, COLS + 1 - w);
+      return { r1, c1, r2: r1 + h, c2: c1 + w };
+    }
+    if (handle.includes('n')) r1 = clamp(r1 + dr, 1, r2 - 1);
+    if (handle.includes('s')) r2 = clamp(r2 + dr, r1 + 1, ROWS + 1);
+    if (handle.includes('w')) c1 = clamp(c1 + dc, 1, c2 - 1);
+    if (handle.includes('e')) c2 = clamp(c2 + dc, c1 + 1, COLS + 1);
+    return { r1, c1, r2, c2 };
+  }
+
+  const gridStr = (g) => `${g.r1}/${g.c1}/${g.r2}/${g.c2}`;
+
   function lint(slide) {
     const out = [], sr = slide.getBoundingClientRect(), sid = slide.id || null, doc = slide.ownerDocument;
     const blocks = [...slide.querySelectorAll('.block')];
@@ -65,5 +91,5 @@
     return out;
   }
 
-  window.PPTGeom = { W, H, COLS, ROWS, clientToSlide, elementRect, slideToClient, rectToCells, hitBlocks, lint };
+  window.PPTGeom = { W, H, COLS, ROWS, clientToSlide, elementRect, slideToClient, rectToCells, hitBlocks, lint, gridOf, dragGrid, gridStr };
 })();

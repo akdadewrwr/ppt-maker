@@ -17,7 +17,11 @@
   </div>
   <div class="block" id="d" style="grid-area:8/7/10/11">overlaps b and c</div>
 </section>
+<section class="slide" id="s2">
+  <div class="block" id="e" style="grid-row:2/4;grid-column:3/span 2">span-based</div>
+</section>
 <script src="geom.js"></script>
+<script src="ops.js"></script>
 <script>
   const G = PPTGeom, log = document.getElementById('log'); let pass = 0, total = 0;
   function check(name, got, want) {
@@ -49,6 +53,55 @@
   check('lint', issues, ['overflow:b', 'overlap:d/b', 'overlap:d/c']);
   document.getElementById('d').removeAttribute('id');
   check('lint missing id', G.lint(slide).filter(i => i.kind === 'missing-id').length, 1);
+
+  // ---- grid drag maths ----
+  check('gridOf inline', G.gridOf(document.getElementById('c')), {r1:3,c1:9,r2:9,c2:17});
+  check('gridOf fallback', G.gridOf(document.getElementById('e')), {r1:2,c1:3,r2:4,c2:5});
+  const g0 = {r1:3,c1:2,r2:6,c2:9};
+  check('dragGrid move snaps', G.dragGrid(g0, 85, -10, 'move'), {r1:3,c1:3,r2:6,c2:10});
+  check('dragGrid move clamps', G.dragGrid(g0, 2000, 2000, 'move'), {r1:7,c1:10,r2:10,c2:17});
+  check('dragGrid resize min 1 cell', G.dragGrid(g0, -1000, 0, 'se'), {r1:3,c1:2,r2:6,c2:3});
+  check('dragGrid resize nw clamps', G.dragGrid(g0, -1000, -1000, 'nw'), {r1:1,c1:1,r2:6,c2:9});
+  check('gridStr', G.gridStr(g0), '3/2/6/9');
+
+  // ---- ops ----
+  const O = PPTOps;
+  const SRC = '<!doctype html><html><head></head><body>\n<section class="slide" id="t1"><div class="block" id="a" style="grid-area:1/1/3/17"><h1 style="color:red;font-size:40px">T</h1></div><div class="obj" id="o1"></div></section>\n<section class="slide" id="t2"></section>\n</body></html>';
+  const mk = () => new DOMParser().parseFromString(SRC, 'text/html');
+  const ser = (d) => d.documentElement.outerHTML;
+  const d = mk(), A = () => d.getElementById('a');
+  check('ops setStyle ok / rejects unknown prop', [O.apply(d, {op:'setStyle', target:'a', args:{style:{background:'#ef4444'}}}),
+    O.apply(d, {op:'setStyle', target:'a', args:{style:{position:'fixed'}}})], [true, false]);
+  check('ops setStyle value', A().style.background, 'rgb(239, 68, 68)');
+  O.apply(d, {op:'setStyle', target:'a', args:{style:{color:'#0000ff'}, deep:true}});
+  check('ops deep style strips inner', [A().style.color, d.querySelector('#a h1').getAttribute('style')], ['rgb(0, 0, 255)', 'font-size: 40px;']);
+  O.apply(d, {op:'setStyle', target:'a', args:{style:{background:null}}});
+  check('ops setStyle clears', A().style.background, '');
+  O.apply(d, {op:'setGrid', target:'a', args:{grid:'0/15/0/40'}});
+  check('ops setGrid clamps', A().style.gridArea, '1 / 15 / 2 / 17');
+  O.apply(d, {op:'insertBlock', args:{id:'b', slideId:'t1', grid:'4/6/6/12', html:'<p>x</p>'}});
+  check('ops insertBlock goes before objects', [...d.getElementById('t1').children].map((n) => n.id), ['a', 'b', 'o1']);
+  check('ops insertBlock refuses duplicate id', O.apply(d, {op:'insertBlock', args:{id:'b', slideId:'t1', grid:'1/1/2/2'}}), false);
+  O.apply(d, {op:'remove', target:'b'});
+  check('ops remove', d.getElementById('b'), null);
+  check('ops missing target', O.apply(d, {op:'setHTML', target:'zz', args:{html:'x'}}), false);
+  check('ops unknown op', O.apply(d, {op:'explode', target:'a'}), false);
+  O.apply(d, {op:'insertSlide', args:{id:'t9', afterId:'t1'}});
+  check('ops insertSlide after', [...d.querySelectorAll('section.slide')].map((s) => s.id), ['t1', 't9', 't2']);
+  O.apply(d, {op:'removeSlide', target:'t9'}); O.apply(d, {op:'removeSlide', target:'t2'});
+  check('ops keeps the last slide', O.apply(d, {op:'removeSlide', target:'t1'}), false);
+  check('ops newId unique', /^b-[0-9a-z]{6}$/.test(O.newId(d, 'b-')), true);
+  const SEQ = [
+    {op:'setStyle', target:'a', args:{style:{'font-size':'32px', 'text-align':'center'}, deep:true}},
+    {op:'setGrid', target:'a', args:{grid:'2/2/5/10'}},
+    {op:'insertBlock', args:{id:'n1', slideId:'t1', grid:'5/2/7/8', html:'<p>新</p>'}},
+    {op:'setHTML', target:'n1', args:{html:'<p><b>改</b></p>'}},
+    {op:'insertSlide', args:{id:'t3', afterId:'t1'}},
+    {op:'removeSlide', target:'t2'},
+  ];
+  const d1 = mk(), d2 = mk();
+  SEQ.forEach((op) => { O.apply(d1, op); O.apply(d2, op); });
+  check('ops deterministic on two copies', ser(d1) === ser(d2) && ser(d1) !== ser(mk()), true);
 
   const r = document.getElementById('result');
   r.textContent = `${pass === total ? 'PASS' : 'FAIL'} ${pass}/${total}`; r.className = pass === total ? 'pass' : 'fail';

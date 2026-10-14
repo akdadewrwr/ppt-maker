@@ -79,7 +79,7 @@ tests/e2e.mjs         新：浏览器驱动测试脚本（仅开发用，需 Nod
 允许固定色值（如 `#ef4444`）。"颜色只用主题变量"降级为 Claude 自行生成内容时的**建议**，不再是硬性规则。用户选的颜色一律写固定值，整体换主题时不会跟着变。
 
 ### 3.2 块样式
-块的 `style` 中允许：`grid-area`、`background`、`border`、`border-radius`、`box-shadow`、`text-align`、`color`、`font-size`、`opacity`。`setStyle` 只接受这些属性（浮动对象另加 `left`、`top`、`width`、`height`、`transform`、`z-index`）。
+块的 `style` 中允许：`grid-area`、`background`、`border`、`border-radius`、`box-shadow`、`text-align`、`color`、`font-size`、`font-weight`、`font-style`、`text-decoration`、`opacity`（后三项用于不进改字模式时整块加粗 / 斜体 / 下划线）。`setStyle` 只接受这些属性（浮动对象另加 `left`、`top`、`width`、`height`、`transform`、`z-index`）。
 
 ### 3.3 文字格式
 块内允许 `<b>`、`<i>`、`<u>`，以及 `<span style="color:…">` / `<span style="font-size:…px">`。不使用 `<font>`。字号不用 `execCommand('fontSize')`（只有 1–7 号），由页面给选区包一层 `span`。
@@ -150,7 +150,7 @@ tests/e2e.mjs         新：浏览器驱动测试脚本（仅开发用，需 Nod
 
 ### 4.4 与自动检查（lint）的配合
 
-用户执行 `setGrid`、`setGeom`、`insertBlock`、`insertObj` 后保存成功时，把当时页面上的全部 lint 问题记为"已见"，不再上报。之后只有新出现的问题（通常由 Claude 造成）才会以 `lint` 事件发给 Claude。浮动对象与块的重叠不算问题。
+用户执行 `setGrid`、`setGeom`、`insertBlock`、`insertObj` 后保存成功时，把当时页面上的全部 lint 问题记为"已见"，不再上报。之后只有新出现的问题（通常由 Claude 造成）才会以 `lint` 事件发给 Claude。浮动对象与块的重叠不算问题。实现中扩展为：用户的任何直接操作保存成功后，都把当时的 lint 问题记为已见。
 
 ## 5. 撤销与历史
 
@@ -164,7 +164,7 @@ decks/<名字>/.ppt/history/
 - `PUT /api/deck` 成功后存快照（`by: "user"`，label 取请求中的 `label`）。
 - 后台线程每 0.5 秒检查 `deck_version`；与服务记录的"最后已知版本"不同时存快照（`by: "claude"`，label 为"Claude 处理 #eN"，N 取 outbox 中最近一条 ack 了但尚未完成的事件；没有时为"Claude 修改"）。
 - 服务自己写文件（PUT、撤销、重做）时，在 `LOCK` 内更新"最后已知版本"，后台线程不会重复记录。
-- 最多保留 200 份，超出时删除最旧的；快照编号持续递增，不复用。
+- 最多保留 200 份，超出时删除最旧的。丢弃重做分支后，快照编号可能被复用（不影响任何功能）。
 - 快照写入失败只记日志，不影响保存；此时 `/api/history` 返回 `"ok": false`，撤销按钮变灰并提示原因。
 
 ### 5.2 撤销 / 重做

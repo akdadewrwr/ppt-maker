@@ -18,7 +18,8 @@ argument-hint: <deck 名字或主题>
 - **intent 带 `quote`**（用户在改字模式下选中文字后右键发来的）：只改这段原文。在 `blocks[0]` 里找 `quote.text`；出现多次时用 `quote.before` / `quote.after` 定位。只替换这一处，块里其他内容一律不动；没有截图，也不用看。原文已找不到时，在回执里问用户，不要猜。
 - **answer**：`re` 指向原 intent；结合原意图、你之前的回执和这条回答继续改。
 - **lint**：修 `issues`：overflow → 精简文字、减小字号或扩大 grid-area；overlap → 调整 grid-area；missing-id / duplicate-id → 补或改 id。同一块同一问题最多自动修 2 次，之后只回执说明，让用户决定。
-- **edit**：用户直接改了某块。无需动作、无需回执；下次改文件前重新读。
+- **edit**：用户在页面上直接改了内容（`label` 说明改了什么，如"移动 b-left""样式 background=#ef4444 b-title"）。无需动作、无需回执；下次改文件前重新读。
+- **edit 且 `op` 为 `undo` / `redo`**：用户撤销或重做了一步（`label` 如"撤销了 Claude 处理 #e17"）。**被撤销的是你的修改时，不要自动改回去**；同一意图再次出现时换一种做法，必要时先问用户。
 - 处理完必须回执（一句话说明改了什么）：`python ppt/server.py --reply "decks/<名字>" <id> "<说明>"`。没理解就在回执里问一个具体问题，不要猜着大改。
 - 用户在终端直接说的话照常执行，规则相同。
 
@@ -26,7 +27,9 @@ argument-hint: <deck 名字或主题>
 1. 每页 `<section class="slide" id="s-…">`，每块 `<div class="block" id="b-…">`，id 全文件唯一。
 2. id 是固定名字，不表示位置；调页序、增删内容都不重编号。新 id 用有意义的短名。
 3. 定位只用 `style="grid-area:起始行/起始列/结束行/结束列"`，网格 16 列 × 9 行（画布 1280×720，每格 80px，结束线最大为行 10 / 列 17）。块内细分用 `class="block grid"` 并写 `grid-template-columns`/`grid-template-rows`。
-4. 颜色字体只用 `#theme` 里的 CSS 变量；整体风格只改 `#theme`；单块主题在该块 style 里覆盖变量。不改 `#base`。
+4. 你自己生成内容时，颜色和字体优先用 `#theme` 里的 CSS 变量；整体换风格只改 `#theme`。用户在页面上选的颜色是固定色值（如 `#ef4444`），保留它们，不要改成变量。不改 `#base`。
 5. 文字必须是真文字；表格用 `<table>`；插图用内联 SVG 或 `assets/` 下的图片。
 6. 单文件离线：不引用外部网络资源（字体、脚本、图片都不行）。
 7. 不要写入任何 `data-ppt` 属性或 `ppt-` 开头的 class（编辑层专用）。
+8. 块的 `style` 只写这些属性：`grid-area, background, border, border-radius, box-shadow, text-align, color, font-size, font-weight, font-style, text-decoration, opacity`；块内文字格式只用 `<b> <i> <u>` 和 `<span style="color:…">` / `<span style="font-size:…px">`，不用 `<font>`。
+9. 不要创建或修改 `.ppt/history/`，撤销由页面完成。

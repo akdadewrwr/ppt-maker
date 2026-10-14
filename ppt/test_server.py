@@ -168,6 +168,42 @@ class EventTests(ServerCase):
 
 
 
+class ReviewFixTests(ServerCase):
+    def test_wrong_field_types_rejected(self):  # I2
+        for bad in ({"type": "intent", "blocks": [1]}, {"type": "intent", "text": 5},
+                    {"type": "intent", "slide_id": ["x"]}, {"type": "lint", "issues": "x"}):
+            self.assertEqual(self.req("POST", "/api/event?t=tok", bad)[0], 400, bad)
+
+    def test_tail_survives_malformed_event(self):  # I2
+        server.append_jsonl(server.runtime(self.deck) / "inbox.jsonl", {"id": "e1", "type": "intent", "blocks": [1], "text": 7})
+        server.append_jsonl(server.runtime(self.deck) / "inbox.jsonl", {"id": "e2", "type": "intent", "text": "好"})
+        lines = []
+        server.tail(self.deck, lines.append, stop=lambda: True)
+        self.assertEqual([l.split()[0] for l in lines], ["e1", "e2"])
+
+    def test_read_jsonl_tolerates_torn_utf8(self):  # M1
+        p = server.runtime(self.deck) / "inbox.jsonl"
+        p.write_bytes('{"id": "e1", "type": "intent", "text": "好"}\n{"id": "e2", "text": "'.encode() + "中".encode()[:2])
+        self.assertEqual([e["id"] for e in server.read_jsonl(p)], ["e1"])
+
+    def test_token_persists_across_restarts(self):  # I2b
+        a = server.make_server(self.deck, port=0)
+        b = server.make_server(self.deck, port=0)
+        try:
+            self.assertEqual(a.token, b.token)
+            self.assertEqual((self.deck / ".ppt" / "token").read_text(encoding="utf-8"), a.token)
+        finally:
+            a.server_close(); b.server_close()
+
+    def test_get_raw_deck(self):  # I3: page rebuilds from the file text, not the live DOM
+        status, body = self.req("GET", "/api/deck?t=tok")
+        self.assertEqual(status, 200)
+        d = json.loads(body)
+        self.assertEqual(d["html"], (self.deck / "deck.html").read_text(encoding="utf-8"))
+        self.assertEqual(d["version"], server.deck_version(self.deck))
+        self.assertEqual(self.req("GET", "/api/deck")[0], 403)
+
+
 class CliTests(ServerCase):
     def test_reply_drives_status(self):
         server.reply(self.deck, "e1", ack=True)

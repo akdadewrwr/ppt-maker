@@ -16,6 +16,8 @@ MAX_BODY = 10 * 1024 * 1024
 MAX_SHOT = 5 * 1024 * 1024
 MAX_TEXT = 4000
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
+FIELD_TYPES = {"type": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
+               "blocks": list, "text": str, "issues": list}
 HEARTBEAT_SECS = 10
 ONLINE_SECS = 30
 LOCK = threading.Lock()
@@ -45,7 +47,7 @@ def read_jsonl(path):
     if not path.exists():
         return []
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():  # another process may be mid-append
         try:
             out.append(json.loads(line))
         except ValueError:
@@ -69,7 +71,10 @@ def clean_event(body):
     """Whitelist fields from a page-posted event; returns (event, png_bytes|None)."""
     if not isinstance(body, dict) or body.get("type") not in EVENT_TYPES:
         raise ValueError("bad type")
-    ev = {k: body[k] for k in ("type", "re", "slide", "slide_id", "rect", "cells", "blocks", "text", "issues") if k in body}
+    ev = {k: body[k] for k in FIELD_TYPES if k in body and body[k] is not None}
+    bad = [k for k, t in FIELD_TYPES.items() if k in ev and not isinstance(ev[k], t)]
+    if bad or not all(isinstance(b, str) for b in ev.get("blocks", [])):
+        raise ValueError(f"bad field types: {bad or ['blocks']}")
     if len(str(ev.get("text", ""))) > MAX_TEXT:
         raise ValueError("text too long")
     shot = None
@@ -130,6 +135,13 @@ def summary(e):
     return " ".join(line.split())
 
 
+def safe_summary(e):
+    try:
+        return summary(e)
+    except Exception:  # one bad line must never stop the wake-up loop
+        return f"{e.get('id')} {e.get('type')} (unreadable event, see .ppt/inbox.jsonl)"
+
+
 def tail(deck, emit, stop=lambda: False, interval=0.5):
     """Emit every unfinished event, then follow the inbox. Heartbeat lets the page show 'Claude online'."""
     rt = runtime(deck)
@@ -137,7 +149,7 @@ def tail(deck, emit, stop=lambda: False, interval=0.5):
     events, st = read_jsonl(inbox), statuses(deck)
     for e in events:
         if e.get("type") in EVENT_TYPES and st.get(e.get("id")) != "done":
-            emit(summary(e))
+            emit(safe_summary(e))
     seen, beat = len(events), 0.0
     while not stop():
         if time.time() - beat >= HEARTBEAT_SECS:
@@ -145,7 +157,7 @@ def tail(deck, emit, stop=lambda: False, interval=0.5):
             beat = time.time()
         events = read_jsonl(inbox)
         for e in events[seen:]:
-            emit(summary(e))
+            emit(safe_summary(e))
         seen = len(events)
         time.sleep(interval)
 
@@ -204,6 +216,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, html, "text/html; charset=utf-8")
         if path == "/api/state":
             return self.send(200, state(deck))
+        if path == "/api/deck":  # raw file text: the page saves edits into this, not into the live DOM
+            with LOCK:
+                return self.send(200, {"version": deck_version(deck), "html": (deck / "deck.html").read_text(encoding="utf-8")})
         if path.startswith("/_ppt/"):
             root, f = HERE, safe_path(HERE, path[len("/_ppt/"):])
         else:
@@ -270,7 +285,12 @@ def make_server(deck, port=8765, token=None, tries=20):
     else:
         raise SystemExit(f"no free port in {port}-{port + tries - 1}")
     srv.deck = Path(deck).resolve()
-    srv.token = token or secrets.token_urlsafe(16)
+    if not token:  # persisted so a restart keeps the URL and open tabs keep working
+        tf = runtime(srv.deck) / "token"
+        if not tf.exists():
+            tf.write_text(secrets.token_urlsafe(16), encoding="utf-8")
+        token = tf.read_text(encoding="utf-8").strip()
+    srv.token = token
     return srv
 
 

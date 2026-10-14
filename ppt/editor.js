@@ -29,13 +29,41 @@
   }
 
   const ui = el('div', null, document.body); ui.id = 'ppt-ui'; ui.setAttribute('data-ppt', '');
-  const status = el('div', 'ppt-status', ui, '连接中…');
   const marks = el('div', null, ui);
+  let selected = null, savedRange = null;
+  const movable = (b) => !!b && b.id && b.classList.contains('block') && b.parentElement?.matches('section.slide');
+  function select(b) {
+    // slide clicks preventDefault, so a reply box or popup keeps focus and would swallow Delete/Enter: release it
+    if (b && document.activeElement?.closest?.('#ppt-ui')) document.activeElement.blur();
+    selected = b;
+    tb.select(b, { editing: !!editing && editing.block === b, resizable: movable(b) });
+  }
+  function currentSlide() { // the slide showing the most area in the viewport
+    let best = slides()[0], most = -1;
+    for (const s of slides()) {
+      const r = s.getBoundingClientRect(), vis = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+      if (vis > most) { most = vis; best = s; }
+    }
+    return best;
+  }
+  const themeColors = () => [...new Set([...(document.getElementById('theme')?.textContent || '').matchAll(/--[\w-]+\s*:\s*(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\))/g)].map((m) => m[1]))];
+  function rememberColor(c) { if (c) ls.set('ppt-recent-colors', [c, ...ls.get('ppt-recent-colors', []).filter((x) => x !== c)].slice(0, 8)); }
+  const tb = PPTToolbar.create(ui, {
+    place, themeColors, recentColors: () => ls.get('ppt-recent-colors', []),
+    undo: () => undoRedo('undo'), redo: () => undoRedo('redo'),
+    addText, addSlide, removeSlide,
+    startResize(handle, e) { if (selected) drag = { mode: handle, el: selected, slide: selected.closest('section.slide'), x0: e.clientX, y0: e.clientY, g0: G.gridOf(selected) }; },
+    textStyle, blockStyle, toggle, border, toggleShadow,
+    remove() { if (!selected) return; const id = selected.id; select(null); commit({ op: 'remove', target: id, label: `删除 ${id}` }); },
+    ask: askSelected,
+  });
+  addEventListener('scroll', () => tb.reposition(), { passive: true });
+  function textStyle() {} function blockStyle() {} function toggle() {} function border() {} function toggleShadow() {}
 
   // ---- fit, reload, scroll restore ----
   function fit() { document.documentElement.style.setProperty('--ppt-zoom', String(Math.min(1, (innerWidth - 48) / G.W))); lastKey = ''; }
   function reload() { sessionStorage.setItem('ppt-scroll', String(scrollY)); location.reload(); }
-  addEventListener('resize', () => { fit(); render(); });
+  addEventListener('resize', () => { fit(); render(); tb.reposition(); });
   fit();
   const sy = sessionStorage.getItem('ppt-scroll');
   if (sy) { sessionStorage.removeItem('ppt-scroll'); requestAnimationFrame(() => scrollTo(0, +sy)); }
@@ -78,9 +106,10 @@
   // ---- rendering: status pill + per-intent marks and reply bubbles ----
   function render() {
     const pending = ls.get('ppt-queue', []).length;
-    status.className = 'ppt-status' + (offline ? ' off' : '');
-    status.textContent = offline ? `服务断开${pending ? ` · ${pending} 条待发送` : ''}`
-      : `${online ? '● Claude 在线' : '○ Claude 离线'}${pending ? ` · ${pending} 条发送中` : ''}`;
+    tb.setStatus(offline ? `服务断开${pending ? ` · ${pending} 条待发送` : ''}`
+      : `${online ? '● Claude 在线' : '○ Claude 离线'}${pending ? ` · ${pending} 条发送中` : ''}`, offline);
+    tb.setHistory(offline ? null : state?.history);
+    tb.setSlideCount(slides().length);
     if (!state || (document.activeElement && document.activeElement.closest('.ppt-bubble'))) return; // don't wipe a half-typed answer
     const key = JSON.stringify([state.events, ls.get('ppt-dismissed', []), scrollX, document.documentElement.style.cssText]);
     if (key === lastKey) return;
@@ -122,30 +151,52 @@
   // ---- select an area (drag) or a block (click) -> intent popup ----
   function closePop() { if (pop) { pop.box.remove(); pop.node.remove(); pop = null; } }
   document.addEventListener('mousedown', (e) => {
-    if (e.button !== 0 || editing || e.target.closest('#ppt-ui')) return;
+    if (e.button !== 0 || e.target.closest('#ppt-ui')) return;
+    if (editing) {
+      if (!editing.block.contains(e.target) && document.activeElement !== editing.block) endEdit(); // focus went to a toolbar control earlier
+      return;
+    }
     const slide = e.target.closest('section.slide');
-    if (!slide) return;
+    if (!slide) { select(null); return; }
     e.preventDefault();
     closePop();
-    drag = { slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
+    if (selected && selected.contains(e.target) && movable(selected)) {
+      drag = { mode: 'move', el: selected, slide, x0: e.clientX, y0: e.clientY, g0: G.gridOf(selected), target: e.target };
+      return;
+    }
+    drag = { mode: 'area', slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
     place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
   });
   addEventListener('mousemove', (e) => {
     if (!drag) return;
     const sr = drag.slide.getBoundingClientRect();
-    place(drag.box, G.slideToClient(sr, G.clientToSlide(sr, drag.x0, drag.y0, e.clientX, e.clientY)));
+    if (drag.mode === 'area') return place(drag.box, G.slideToClient(sr, G.clientToSlide(sr, drag.x0, drag.y0, e.clientX, e.clientY)));
+    const k = G.W / sr.width; // live preview only; the op is committed on mouseup
+    drag.el.style.gridArea = G.gridStr(G.dragGrid(drag.g0, (e.clientX - drag.x0) * k, (e.clientY - drag.y0) * k, drag.mode));
+    tb.reposition();
   });
   addEventListener('mouseup', (e) => {
     if (!drag) return;
-    const { slide, x0, y0, box } = drag; drag = null;
-    const sr = slide.getBoundingClientRect();
-    let r = G.clientToSlide(sr, x0, y0, e.clientX, e.clientY);
-    if (r.w < 6 && r.h < 6) { // a click selects the innermost block under the pointer
-      const b = document.elementFromPoint(e.clientX, e.clientY)?.closest('.block');
-      if (!b || !slide.contains(b)) { box.remove(); return; }
-      r = G.elementRect(sr, b);
+    const d = drag; drag = null;
+    const sr = d.slide.getBoundingClientRect();
+    if (d.mode !== 'area') {
+      const k = G.W / sr.width;
+      const g = G.gridStr(G.dragGrid(d.g0, (e.clientX - d.x0) * k, (e.clientY - d.y0) * k, d.mode));
+      if (g !== G.gridStr(d.g0)) {
+        commit({ op: 'setGrid', target: d.el.id, args: { grid: g }, label: `${d.mode === 'move' ? '移动' : '调整大小'} ${d.el.id}` });
+      } else if (d.mode === 'move') { // a click inside the selected block selects the innermost block under it
+        select(d.target.closest('.block') || d.el);
+      }
+      return tb.reposition();
     }
-    openPop(slide, r, box, `第 ${slides().indexOf(slide) + 1} 页 · 网格 ${G.rectToCells(r)}`, (text) => submitIntent(slide, r, text));
+    let r = G.clientToSlide(sr, d.x0, d.y0, e.clientX, e.clientY);
+    if (r.w < 6 && r.h < 6) { // a click selects the innermost block under the pointer
+      d.box.remove();
+      const b = document.elementFromPoint(e.clientX, e.clientY)?.closest('.block');
+      return select(b && d.slide.contains(b) ? b : null);
+    }
+    select(null);
+    openPop(d.slide, r, d.box, `第 ${slides().indexOf(d.slide) + 1} 页 · 网格 ${G.rectToCells(r)}`, (text) => submitIntent(d.slide, r, text));
   });
 
   function openPop(slide, r, box, label, onSend) {
@@ -190,7 +241,49 @@
     });
   });
 
-  async function submitIntent(slide, r, text) {
+  function askSelected() {
+    if (!selected) return;
+    const slide = selected.closest('section.slide'), r = G.elementRect(slide.getBoundingClientRect(), selected);
+    const ids = [];
+    for (let n = selected; n && n !== slide; n = n.parentElement) if (n.classList.contains('block') && n.id) ids.push(n.id);
+    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · ${selected.id}`, (text) => submitIntent(slide, r, text, ids));
+  }
+  function addText() {
+    const s = currentSlide(), id = O.newId(document, 'b-');
+    commit({ op: 'insertBlock', args: { id, slideId: s.id, grid: '4/6/6/12', html: '<p style="font-size:24px;margin:0">双击输入文字</p>' }, label: `插入文字块 ${id}` });
+    select(document.getElementById(id));
+  }
+  function addSlide() {
+    const s = currentSlide(), id = O.newId(document, 's-');
+    commit({ op: 'insertSlide', args: { id, afterId: s.id }, label: `插入页 ${id}` });
+    document.getElementById(id)?.scrollIntoView({ block: 'center' });
+  }
+  function removeSlide() {
+    const s = currentSlide();
+    select(null);
+    commit({ op: 'removeSlide', target: s.id, label: `删除页 ${s.id}` });
+  }
+  async function undoRedo(kind) {
+    if (editing) endEdit();
+    await lastSave; await persist(); // never undo past edits that are still being saved
+    if (ls.get('ppt-ops', []).length) return toast('还有修改没保存成功，暂时不能撤销');
+    try {
+      const r = await fetch(api(`/api/${kind}`), { method: 'POST' });
+      if (r.ok) reload();
+    } catch { offline = true; render(); }
+  }
+  document.addEventListener('keydown', (e) => {
+    if (editing) { if (e.key === 'Escape') editing.block.blur(); return; } // typing and its own undo belong to the browser
+    if (e.target.closest?.('#ppt-ui') && /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName)) return;
+    const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+    if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); undoRedo('undo'); }
+    else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); undoRedo('redo'); }
+    else if (e.key === 'Escape') { closePop(); select(null); }
+    else if (selected && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); const id = selected.id; select(null); commit({ op: 'remove', target: id, label: `删除 ${id}` }); }
+    else if (selected && e.key === 'Enter') { e.preventDefault(); askSelected(); }
+  });
+
+  async function submitIntent(slide, r, text, blocks = G.hitBlocks(slide, r)) {
     let shot = null;
     try {
       const full = await htmlToImage.toCanvas(slide, { width: G.W, height: G.H, pixelRatio: 1, style: { zoom: '1', margin: '0' } });
@@ -200,7 +293,7 @@
       shot = c.toDataURL('image/png');
     } catch (err) { console.warn('[ppt] screenshot failed', err); }
     enqueue({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
-              cells: G.rectToCells(r), blocks: G.hitBlocks(slide, r), text, shot });
+              cells: G.rectToCells(r), blocks, text, shot });
   }
 
   // ---- direct text editing (double-click a leaf block) ----
@@ -211,12 +304,24 @@
     editing = { block: b, before: b.innerHTML };
     b.contentEditable = 'true';
     b.focus();
-    b.addEventListener('blur', endEdit, { once: true });
+    b.addEventListener('blur', onEditBlur);
+    select(b);
+  });
+  function onEditBlur(e) {
+    if (e.relatedTarget?.closest?.('#ppt-ui')) return; // a toolbar control took focus: stay in edit mode
+    endEdit();
+  }
+  document.addEventListener('selectionchange', () => {
+    const s = getSelection();
+    if (editing && s.rangeCount && editing.block.contains(s.anchorNode)) savedRange = s.getRangeAt(0).cloneRange();
   });
   async function endEdit() {
+    if (!editing) return;
     const { block, before } = editing;
+    block.removeEventListener('blur', onEditBlur);
     block.removeAttribute('contenteditable');
-    editing = null;
+    editing = null; savedRange = null;
+    select(selected);
     if (block.innerHTML !== before) await commit({ op: 'setHTML', target: block.id, args: { html: block.innerHTML }, label: `改字 ${block.id}` });
   }
   document.addEventListener('paste', (e) => { // plain text only: no foreign markup or remote images in the deck

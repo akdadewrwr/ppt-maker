@@ -62,6 +62,11 @@ const enter = async () => { await send('Input.dispatchKeyEvent', { type: 'keyDow
 const shot = async (name) => { const r = await send('Page.captureScreenshot'); fs.writeFileSync(path.join(SCRATCH, name), Buffer.from(r.result.data, 'base64')); };
 const rectOf = (sel) => ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); const b = e.getBoundingClientRect(); if (b.top < 0 || b.bottom > innerHeight) e.scrollIntoView({block: 'center'}); const r = e.getBoundingClientRect(); return {x: r.left + r.width/2, y: r.top + r.height/2, l: r.left, t: r.top, w: r.width, h: r.height}; })()`);
 const statusText = () => ev(`document.querySelector('.ppt-status').textContent`);
+
+const byTitle = (t) => ev(`(() => { const b = [...document.querySelectorAll('#ppt-ui [title]')].find((n) => n.title.startsWith(${JSON.stringify(t)}) && n.offsetParent); if (!b) return null; const r = b.getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: !!b.disabled}; })()`);
+const key = (k, code, vk, modifiers = 0) => send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers })
+  .then(() => send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers }));
+const kZoom = () => ev(`document.querySelector('section.slide').getBoundingClientRect().width / 1280`);
 await send('Runtime.enable'); await send('Page.enable');
 async function open(u) { await send('Page.navigate', { url: u }); await sleep(1800); }
 
@@ -209,6 +214,47 @@ try {
   const qe = inbox().at(-1);
   check('Q quote intent sent without screenshot', qe?.type === 'intent' && qe.text === '改得更正式' && qe.quote?.text === qs.text && !qe.shot && qe.blocks?.[0] === 'b-p3-sub', JSON.stringify(qe));
   check('Q status mark shown', ((await ev(`[...document.querySelectorAll('.ppt-mark b')].map(b => b.textContent).join()`)) || '').includes(qe?.id));
+  // ---- 2a: selection, move, resize, top bar, keyboard, undo ----
+  await send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
+  await open(url); await sleep(300);
+  const t2 = await rectOf('#b-p2-title');
+  await click(t2.x, t2.y); await sleep(300);
+  check('S click selects (frame + bar, no popup)', await ev(`!!document.querySelector('.ppt-frame:not([hidden])') && !!document.querySelector('.ppt-bar:not([hidden])') && !document.querySelector('.ppt-pop')`));
+  check('S top bar shows status', !!(await ev(`document.querySelector('.ppt-top .ppt-status')?.textContent`)));
+  const k = await kZoom();
+  await drag(t2.x, t2.y, t2.x + 80 * k, t2.y + 80 * k); await sleep(2000);
+  check('S move snaps to grid and saves', deckHtml().includes('id="b-p2-title" style="grid-area: 5 / 3 / 7 / 17;"'));
+  check('S move sends a labelled edit event', /移动/.test(inbox().at(-1)?.label || ''), JSON.stringify(inbox().at(-1)));
+  const se = await ev(`(() => { const r = document.querySelector('.ppt-handle[data-handle="se"]').getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2}; })()`);
+  await drag(se.x, se.y, se.x - 160 * k, se.y); await sleep(2000);
+  check('S resize via handle', deckHtml().includes('id="b-p2-title" style="grid-area: 5 / 3 / 7 / 15;"'));
+  check('U undo right after move undoes the move', await (async () => {
+    const before = deckHtml(); const b = await rectOf('#b-p2-title');
+    await drag(b.x, b.y, b.x, b.y + 80 * k); await sleep(100);        // move, then undo immediately
+    await key('z', 'KeyZ', 90, 2); await sleep(3000);
+    return deckHtml() === before;
+  })());
+  const nSlides = () => (deckHtml().match(/<section class="slide"/g) || []).length;
+  const n0 = nSlides();
+  let tb = await byTitle('在当前页之后插入空白页'); await click(tb.x, tb.y); await sleep(2000);
+  check('T +页 inserts a slide', nSlides() === n0 + 1);
+  tb = await byTitle('删除当前页'); await click(tb.x, tb.y); await sleep(2000);
+  check('T −页 removes a slide', nSlides() === n0);
+  tb = await byTitle('在当前页中央插入文字块'); await click(tb.x, tb.y); await sleep(2000);
+  const newId = await ev(`document.querySelector('.ppt-frame:not([hidden])') && [...document.querySelectorAll('.block')].find((b) => b.textContent.includes('双击输入文字'))?.id`);
+  check('T +文字 inserts and selects a block', !!newId && deckHtml().includes(`id="${newId}"`), newId);
+  await key('Delete', 'Delete', 46); await sleep(2000);
+  check('K Delete removes the selected block', !deckHtml().includes(`id="${newId}"`));
+  // undo a change Claude made directly to the file
+  fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace('id="b-p2-sub"', 'id="b-p2-sub" data-claude="1"'));
+  await sleep(2500);                                                 // watcher snapshot + page reload
+  tb = await byTitle('撤销');
+  check('U undo button names Claude', !tb.disabled && /Claude/.test(await ev(`[...document.querySelectorAll('#ppt-ui [title]')].find((n) => n.title.startsWith('撤销')).title`)));
+  await click(tb.x, tb.y); await sleep(2500);
+  check('U undo reverts Claude change', !deckHtml().includes('data-claude'));
+  check('U undo event for Claude', inbox().at(-1)?.op === 'undo' && /Claude/.test(inbox().at(-1)?.label || ''), JSON.stringify(inbox().at(-1)));
+  tb = await byTitle('重做'); await click(tb.x, tb.y); await sleep(2500);
+  check('U redo restores it', deckHtml().includes('data-claude'));
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } finally {

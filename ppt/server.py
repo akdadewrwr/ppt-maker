@@ -65,6 +65,63 @@ def safe_path(root, rel):
     return p if p.is_relative_to(root) and p.is_file() else None
 
 
+def clean_event(body):
+    """Whitelist fields from a page-posted event; returns (event, png_bytes|None)."""
+    if not isinstance(body, dict) or body.get("type") not in EVENT_TYPES:
+        raise ValueError("bad type")
+    ev = {k: body[k] for k in ("type", "re", "slide", "slide_id", "rect", "cells", "blocks", "text", "issues") if k in body}
+    if len(str(ev.get("text", ""))) > MAX_TEXT:
+        raise ValueError("text too long")
+    shot = None
+    if body.get("shot"):
+        b64 = str(body["shot"]).split(",", 1)[-1]
+        if len(b64) > MAX_SHOT * 4 // 3 + 4:
+            raise ValueError("shot too large")
+        shot = base64.b64decode(b64, validate=True)  # binascii.Error is a ValueError
+        if not shot.startswith(b"\x89PNG"):
+            raise ValueError("shot must be png")
+    return ev, shot
+
+
+def add_event(deck, ev, shot=None):
+    """Assign id/ts and append to inbox. Caller holds LOCK."""
+    rt = runtime(deck)
+    inbox = rt / "inbox.jsonl"
+    n = len(inbox.read_text(encoding="utf-8").splitlines()) if inbox.exists() else 0  # raw lines: ids never reused
+    eid = f"e{n + 1}"
+    if shot:
+        (rt / "shots" / f"{eid}.png").write_bytes(shot)
+        ev = {**ev, "shot": f".ppt/shots/{eid}.png"}
+    ev = {"id": eid, "ts": now_iso(), **ev}
+    append_jsonl(inbox, ev)
+    return ev
+
+
+def statuses(deck):
+    """event id -> 'processing' (acked) | 'done' (replied); absent = queued."""
+    st = {}
+    for r in read_jsonl(runtime(deck) / "outbox.jsonl"):
+        if r.get("ack"):
+            st.setdefault(r.get("re"), "processing")
+        else:
+            st[r.get("re")] = "done"
+    return st
+
+
+def state(deck):
+    rt = runtime(deck)
+    st = statuses(deck)
+    replies = {r.get("re"): r.get("text", "") for r in read_jsonl(rt / "outbox.jsonl") if not r.get("ack")}
+    hb = rt / "heartbeat"
+    events = [{"id": e["id"], "type": e["type"], "re": e.get("re"), "slide_id": e.get("slide_id"),
+               "rect": e.get("rect"), "text": e.get("text", ""),
+               "status": st.get(e["id"], "queued"), "reply": replies.get(e["id"])}
+              for e in read_jsonl(rt / "inbox.jsonl") if e.get("type") in ("intent", "answer")]
+    return {"version": deck_version(deck),
+            "online": hb.exists() and time.time() - hb.stat().st_mtime < ONLINE_SECS,
+            "events": events}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -107,6 +164,8 @@ class Handler(BaseHTTPRequestHandler):
             i = html.lower().rfind("</body>")
             html = html[:i] + inj + html[i:] if i >= 0 else html + inj
             return self.send(200, html, "text/html; charset=utf-8")
+        if path == "/api/state":
+            return self.send(200, state(deck))
         if path.startswith("/_ppt/"):
             root, f = HERE, safe_path(HERE, path[len("/_ppt/"):])
         else:
@@ -114,6 +173,49 @@ class Handler(BaseHTTPRequestHandler):
         if not f or (root == deck and ".ppt" in f.relative_to(deck.resolve()).parts):
             return self.send(404, {"error": "not found"})
         self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+
+    def read_json(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY:
+            raise ValueError("body too large")
+        return json.loads(self.rfile.read(n) or b"null")
+
+    def do_POST(self):
+        url = self.guard(need_token=True)
+        if not url:
+            return
+        if url.path != "/api/event":
+            return self.send(404, {"error": "not found"})
+        try:
+            ev, shot = clean_event(self.read_json())
+        except ValueError as e:
+            return self.send(400, {"error": str(e)})
+        with LOCK:
+            ev = add_event(self.server.deck, ev, shot)
+        self.send(200, {"id": ev["id"]})
+
+    def do_PUT(self):
+        url = self.guard(need_token=True)
+        if not url:
+            return
+        if url.path != "/api/deck":
+            return self.send(404, {"error": "not found"})
+        try:
+            body = self.read_json()
+            html, ver = body["html"], body["version"]
+            if not isinstance(html, str) or "<html" not in html.lower():
+                raise ValueError("bad html")
+        except (ValueError, KeyError, TypeError) as e:
+            return self.send(400, {"error": str(e)})
+        deck = self.server.deck
+        with LOCK:
+            cur = deck_version(deck)
+            if ver != cur:
+                return self.send(409, {"version": cur})
+            (deck / "deck.html").write_bytes(html.encode("utf-8"))
+            new = deck_version(deck)
+            add_event(deck, {"type": "edit", "slide_id": body.get("slide_id"), "block": body.get("block")})
+        self.send(200, {"version": new})
 
 
 class Server(ThreadingHTTPServer):

@@ -77,5 +77,73 @@ class PageTests(ServerCase):
             busy.close()
 
 
+PNG = "data:image/png;base64," + __import__("base64").b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+
+
+def inbox(deck):
+    return server.read_jsonl(deck / ".ppt" / "inbox.jsonl")
+
+
+class EventTests(ServerCase):
+    def test_post_intent_with_shot(self):
+        ev = {"type": "intent", "slide": 1, "slide_id": "s-cover", "rect": {"x": 0, "y": 0, "w": 80, "h": 80},
+              "cells": "1-1/1-1", "blocks": ["b-cover-title"], "text": "标题改成蓝色渐变", "shot": PNG, "id": "hack"}
+        status, body = self.req("POST", "/api/event?t=tok", ev)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["id"], "e1")
+        [stored] = inbox(self.deck)
+        self.assertEqual(stored["id"], "e1")                      # client id ignored
+        self.assertEqual(stored["text"], "标题改成蓝色渐变")         # Chinese round-trip
+        self.assertEqual(stored["shot"], ".ppt/shots/e1.png")
+        self.assertTrue((self.deck / ".ppt" / "shots" / "e1.png").read_bytes().startswith(b"\x89PNG"))
+        self.assertEqual(json.loads(self.req("POST", "/api/event?t=tok", {"type": "answer", "re": "e1", "text": "好"})[1])["id"], "e2")
+
+    def test_blank_area_selection_accepted(self):
+        status, _ = self.req("POST", "/api/event?t=tok", {"type": "intent", "slide_id": "s-cover", "cells": "1-2/8-9", "blocks": [], "text": "这里加脚注"})
+        self.assertEqual(status, 200)
+
+    def test_post_requires_token(self):
+        self.assertEqual(self.req("POST", "/api/event", {"type": "intent", "text": "x"})[0], 403)
+        self.assertEqual(self.req("POST", "/api/event?t=no", {"type": "intent", "text": "x"})[0], 403)
+        self.assertEqual(inbox(self.deck), [])
+
+    def test_post_rejects_bad_input(self):
+        for bad in ({"type": "edit"}, {"type": "nope"}, [], {"type": "intent", "text": "字" * 4001},
+                    {"type": "intent", "shot": "data:image/png;base64,R0lGODlh"}, {"type": "intent", "shot": "data:,!!!"}):
+            self.assertEqual(self.req("POST", "/api/event?t=tok", bad)[0], 400, bad)
+        self.assertEqual(inbox(self.deck), [])
+
+    def test_put_deck_version_check(self):
+        ver = json.loads(self.req("GET", "/api/state?t=tok")[1])["version"]
+        html = (self.deck / "deck.html").read_text(encoding="utf-8").replace("副标题", "组会·第三周")
+        status, body = self.req("PUT", "/api/deck?t=tok", {"version": ver, "html": html, "block": "b-cover-sub", "slide_id": "s-cover"})
+        self.assertEqual(status, 200)
+        new = json.loads(body)["version"]
+        self.assertNotEqual(new, ver)
+        self.assertIn("组会·第三周", (self.deck / "deck.html").read_text(encoding="utf-8"))
+        self.assertEqual(inbox(self.deck)[-1]["type"], "edit")
+        self.assertEqual(inbox(self.deck)[-1]["block"], "b-cover-sub")
+        status, body = self.req("PUT", "/api/deck?t=tok", {"version": ver, "html": html})   # stale
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["version"], new)
+        self.assertEqual(self.req("PUT", "/api/deck?t=tok", {"version": new, "html": "not html"})[0], 400)
+        self.assertEqual(self.req("PUT", "/api/deck", {"version": new, "html": html})[0], 403)
+
+    def test_state_statuses_and_online(self):
+        self.req("POST", "/api/event?t=tok", {"type": "intent", "slide_id": "s-cover", "text": "a"})
+        self.req("POST", "/api/event?t=tok", {"type": "intent", "slide_id": "s-cover", "text": "b"})
+        self.req("POST", "/api/event?t=tok", {"type": "lint", "issues": []})
+        out = server.runtime(self.deck) / "outbox.jsonl"
+        server.append_jsonl(out, {"re": "e1", "text": "", "ack": True})
+        server.append_jsonl(out, {"re": "e2", "text": "", "ack": True})
+        server.append_jsonl(out, {"re": "e2", "text": "已改", "ack": False})
+        s = json.loads(self.req("GET", "/api/state?t=tok")[1])
+        self.assertFalse(s["online"])
+        self.assertEqual([(e["id"], e["status"], e["reply"]) for e in s["events"]],
+                         [("e1", "processing", None), ("e2", "done", "已改")])   # lint not listed
+        (self.deck / ".ppt" / "heartbeat").write_text("x")
+        self.assertTrue(json.loads(self.req("GET", "/api/state?t=tok")[1])["online"])
+
+
 if __name__ == "__main__":
     unittest.main()

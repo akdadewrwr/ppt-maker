@@ -42,6 +42,7 @@
 <script src="icons.js"></script>
 <script src="icons-zh.js"></script>
 <script src="toolbar.js"></script>
+<script src="sketch.js"></script>
 <script>
   const G = PPTGeom, log = document.getElementById('log'); let pass = 0, total = 0;
   function check(name, got, want) {
@@ -146,6 +147,27 @@
   const d1 = mk(), d2 = mk();
   SEQ.forEach((op) => { O.apply(d1, op); O.apply(d2, op); });
   check('ops deterministic on two copies', ser(d1) === ser(d2) && ser(d1) !== ser(mk()), true);
+
+  // ---- 3: sketch maths ----
+  const K = window.PPTSketch || {};
+  check('simplify drops collinear points', K.simplify && K.simplify(Array.from({ length: 50 }, (_, i) => [i * 2, 0])), [[0, 0], [98, 0]]);
+  check('simplify keeps a corner', K.simplify && K.simplify([[0, 0], [50, 0], [100, 0], [100, 50], [100, 100]]), [[0, 0], [100, 0], [100, 100]]);
+  check('smoothPath: quadratic through midpoints', K.smoothPath && K.smoothPath([[0, 0], [10, 0], [10, 10]]), 'M0 0Q10 0 10 5L10 10');
+  check('smoothPath: one point is a dot', K.smoothPath && K.smoothPath([[5, 5]]), 'M5 5L5 5');
+  const st = { type: 'stroke', color: '#ef4444', width: 4, pts: [[0, 0], [100, 50]] };
+  check('bounds clamps to the canvas', K.bounds && [K.bounds([st], 8, true), K.bounds([st], 8, false), K.bounds([], 8, true)],
+    [{ x: 0, y: 0, w: 108, h: 58 }, { x: -8, y: -8, w: 116, h: 66 }, null]);
+  check('bounds counts a note box', K.bounds && K.bounds([{ type: 'note', color: '#111827', x: 200, y: 100, text: '标题' }], 0, true), { x: 200, y: 100, w: 52, h: 28 });
+  check('inkSVG: box, relative coords, non-scaling stroke', K.inkSVG && K.inkSVG([{ type: 'stroke', color: '#ef4444', width: 4, pts: [[100, 100], [200, 100]] }]),
+    { geom: { x: 94, y: 94, w: 112, h: 12 }, html: '<svg viewBox="0 0 112 12" preserveAspectRatio="none"><path d="M6 6L106 6" fill="none" stroke="#ef4444" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>' });
+  check('inkSVG escapes note text', K.inkSVG && (() => { const h = K.inkSVG([{ type: 'note', color: '#111827', x: 10, y: 10, text: '<b>&' }]).html; return h.includes('&lt;b&gt;&amp;') && !h.includes('<b>'); })(), true);
+  const hs = [{ type: 'stroke', width: 4, pts: [[0, 0], [100, 0]] }, { type: 'stroke', width: 4, pts: [[0, 0], [0, 100]] }];
+  check('hitItem: near a stroke, miss, topmost first', K.hitItem && [K.hitItem(hs, 50, 7), K.hitItem(hs, 50, 9), K.hitItem(hs, 0, 0)], [0, -1, 1]);
+  check('drawOnCanvas burns strokes in', K.drawOnCanvas && (() => {
+    const c = document.createElement('canvas'); c.width = 100; c.height = 50; const x = c.getContext('2d');
+    K.drawOnCanvas(x, [{ type: 'stroke', color: '#000000', width: 4, d: 'M0 25L100 25' }], 1);
+    return x.getImageData(50, 25, 1, 1).data[3] > 0;
+  })(), true);
 
   // ---- 2b: icons ----
   const I = window.PPTIcons || {}, Z = window.PPTIconsZh || {}, S = window.PPTToolbar?.searchIcons;

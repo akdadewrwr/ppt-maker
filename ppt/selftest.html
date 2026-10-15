@@ -107,6 +107,70 @@
   SEQ.forEach((op) => { O.apply(d1, op); O.apply(d2, op); });
   check('ops deterministic on two copies', ser(d1) === ser(d2) && ser(d1) !== ser(mk()), true);
 
+  // ---- 2b: floating objects ----
+  const OSRC = '<!doctype html><html><head><style id="base">.slide { }</style></head><body>\n<section class="slide" id="u1"><div class="block" id="ub" style="grid-area:1/1/3/5">b</div></section>\n</body></html>';
+  const mo = () => new DOMParser().parseFromString(OSRC, 'text/html');
+  const od = mo(), OB = (id) => od.getElementById(id);
+  const hadBase = O.hasObjBase(od); O.apply(od, {op:'ensureBase'}); O.apply(od, {op:'ensureBase'});
+  check('obj ensureBase adds the rules once', [hadBase, O.hasObjBase(od), od.getElementById('base').textContent.match(/\.obj \{/g).length], [false, true, 1]);
+  const nob = new DOMParser().parseFromString('<html><head></head><body></body></html>', 'text/html'); O.apply(nob, {op:'ensureBase'});
+  check('obj ensureBase creates #base when missing', O.hasObjBase(nob), true);
+  check('obj insertObj shape', [O.apply(od, {op:'insertObj', args:{id:'o1', slideId:'u1', kind:'shape', shape:'rect', geom:{x:10.4, y:20, w:200, h:100}, style:{fill:'#dbeafe', 'stroke-width':'2'}}}),
+    OB('o1').dataset.kind, OB('o1').dataset.shape, OB('o1').style.left, OB('o1').style.width, OB('o1').style.strokeWidth,
+    OB('o1').querySelector('svg').getAttribute('viewBox'), OB('o1').querySelector('svg > rect').getAttribute('width')],
+    [true, 'shape', 'rect', '10px', '200px', '2', '0 0 200 100', '200']);
+  check('obj goes after the blocks (on top)', [...OB('u1').children].map((n) => n.id), ['ub', 'o1']);
+  check('obj insertObj refuses dup id / unknown kind / bad style / unknown shape', [
+    O.apply(od, {op:'insertObj', args:{id:'o1', slideId:'u1', kind:'icon', geom:{x:0, y:0, w:9, h:9}}}),
+    O.apply(od, {op:'insertObj', args:{id:'o2', slideId:'u1', kind:'video', geom:{x:0, y:0, w:9, h:9}}}),
+    O.apply(od, {op:'insertObj', args:{id:'o2', slideId:'u1', kind:'icon', geom:{x:0, y:0, w:9, h:9}, style:{position:'fixed'}}}),
+    O.apply(od, {op:'insertObj', args:{id:'o2', slideId:'u1', kind:'shape', shape:'star', geom:{x:0, y:0, w:9, h:9}}})], [false, false, false, false]);
+  O.apply(od, {op:'setHTML', target:'o1', args:{html:'<b>文字</b>', text:true}});
+  O.apply(od, {op:'setGeom', target:'o1', args:{x:30, y:40, w:300, h:50, rot:30}});
+  check('obj setGeom redraws svg, keeps text, rotates', [OB('o1').style.left, OB('o1').style.transform, OB('o1').querySelector('svg').getAttribute('viewBox'),
+    OB('o1').querySelector('svg > rect').getAttribute('width'), OB('o1').querySelector(':scope > .obj-text').innerHTML, OB('o1').querySelectorAll('svg').length],
+    ['30px', 'rotate(30deg)', '0 0 300 50', '300', '<b>文字</b>', 1]);
+  O.apply(od, {op:'setGeom', target:'o1', args:{x:30, y:40, w:300, h:50, rot:0}});
+  check('obj rot 0 drops transform', OB('o1').style.transform, '');
+  O.apply(od, {op:'setHTML', target:'o1', args:{html:'', text:true}});
+  check('obj empty text removes the text area', OB('o1').querySelector('.obj-text'), null);
+  check('obj setHTML text needs an object', O.apply(od, {op:'setHTML', target:'ub', args:{html:'x', text:true}}), false);
+  O.apply(od, {op:'insertObj', args:{id:'a1', slideId:'u1', kind:'arrow', shape:'arrow', ends:{x1:100, y1:100, x2:300, y2:100}, style:{stroke:'#2563eb'}}});
+  const lineOf = (id) => [...OB(id).querySelector('line').attributes].map((x) => `${x.name}=${x.value}`).join(' ');
+  check('obj arrow box pads the endpoints', [OB('a1').style.left, OB('a1').style.top, OB('a1').style.width, OB('a1').style.height, lineOf('a1'), OB('a1').querySelectorAll('polyline').length],
+    ['92px', '92px', '216px', '16px', 'x1=8 y1=8 x2=208 y2=8', 1]);
+  O.apply(od, {op:'setArrow', target:'a1', args:{x1:100, y1:300, x2:300, y2:100}});
+  check('obj setArrow redraws', [OB('a1').style.height, OB('a1').querySelector('svg').getAttribute('viewBox'), lineOf('a1')], ['216px', '0 0 216 216', 'x1=8 y1=208 x2=208 y2=8']);
+  check('obj setArrow needs an arrow', O.apply(od, {op:'setArrow', target:'o1', args:{x1:0, y1:0, x2:1, y2:1}}), false);
+  ['line', 'arrow2'].forEach((s, i) => O.apply(od, {op:'insertObj', args:{id:`l${i}`, slideId:'u1', kind:'arrow', shape:s, ends:{x1:0, y1:0, x2:50, y2:0}}}));
+  check('obj line has no head, double arrow two', [OB('l0').querySelectorAll('polyline').length, OB('l1').querySelectorAll('polyline').length], [0, 2]);
+  check('obj style whitelist', [O.apply(od, {op:'setStyle', target:'o1', args:{style:{fill:'#ef4444', transform:'rotate(15deg)', opacity:'0.5'}}}),
+    O.apply(od, {op:'setStyle', target:'o1', args:{style:{transform:'scale(3)'}}}),
+    O.apply(od, {op:'setStyle', target:'ub', args:{style:{left:'5px'}}}),
+    O.apply(od, {op:'setStyle', target:'o1', args:{style:{'grid-area':'1/1/2/2'}}})], [true, false, false, false]);
+  const zorder = () => [...OB('u1').children].map((n) => n.id).join();
+  O.apply(od, {op:'setZ', target:'o1', args:{z:'top'}}); const z1 = zorder();
+  O.apply(od, {op:'setZ', target:'o1', args:{z:'bottom'}});
+  check('obj setZ top / bottom stays above blocks', [z1, zorder(), O.apply(od, {op:'setZ', target:'ub', args:{z:'top'}})], ['ub,a1,l0,l1,o1', 'ub,o1,a1,l0,l1', false]);
+  O.apply(od, {op:'insertObj', args:{id:'f1', slideId:'u1', kind:'shape', geom:{x:0, y:0, w:10, h:10}, html:'<svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="5"/></svg>'}});
+  O.apply(od, {op:'setGeom', target:'f1', args:{x:5, y:5, w:40, h:20}});
+  check('obj setGeom without data-shape only moves the box', [OB('f1').style.width, OB('f1').querySelector('svg').getAttribute('viewBox')], ['40px', '0 0 10 10']);
+  check('obj setGeom needs an object', O.apply(od, {op:'setGeom', target:'ub', args:{x:0, y:0, w:9, h:9}}), false);
+  const OSEQ = [
+    {op:'ensureBase'},
+    {op:'insertObj', args:{id:'q1', slideId:'u1', kind:'shape', shape:'ellipse', geom:{x:1, y:2, w:30, h:20}, style:{fill:'#dbeafe'}}},
+    {op:'setGeom', target:'q1', args:{x:5, y:6, w:50, h:40, rot:-45}},
+    {op:'setHTML', target:'q1', args:{html:'字', text:true}},
+    {op:'insertObj', args:{id:'q2', slideId:'u1', kind:'arrow', shape:'arrow2', ends:{x1:10, y1:10, x2:90, y2:70}}},
+    {op:'setArrow', target:'q2', args:{x1:15, y1:10, x2:90, y2:75}},
+    {op:'setStyle', target:'q2', args:{style:{stroke:'#ef4444', 'stroke-width':'4'}}},
+    {op:'setZ', target:'q1', args:{z:'top'}},
+    {op:'remove', target:'ub'},
+  ];
+  const od1 = mo(), od2 = mo();
+  OSEQ.forEach((op) => { O.apply(od1, op); O.apply(od2, op); });
+  check('obj ops deterministic on two copies', ser(od1) === ser(od2) && ser(od1) !== ser(mo()), true);
+
   const r = document.getElementById('result');
   r.textContent = `${pass === total ? 'PASS' : 'FAIL'} ${pass}/${total}`; r.className = pass === total ? 'pass' : 'fail';
 </script>

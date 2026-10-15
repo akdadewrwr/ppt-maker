@@ -292,6 +292,24 @@ class DrainTests(unittest.TestCase):
         self.assertEqual((f.tell(), max(reads)), (200_000, 65536))
 
 
+class SketchTests(ServerCase):
+    def test_notes_kept_and_summarised(self):
+        self.req("POST", "/api/event?t=tok", {"type": "intent", "kind": "sketch", "slide_id": "s-cover", "blocks": [],
+                                              "text": "按草图修改这一页", "notes": ["标题", "这里放图表"]})
+        e = inbox(self.deck)[-1]
+        self.assertEqual(e["notes"], ["标题", "这里放图表"])
+        self.assertIn("notes:「标题」「这里放图表」", server.summary(e))
+
+    def test_bad_notes_rejected(self):
+        for notes in (["ok", 5], ["x"] * 51, ["长" * 201], "标题"):
+            self.assertEqual(self.req("POST", "/api/event?t=tok", {"type": "intent", "kind": "sketch", "text": "x", "notes": notes})[0], 400, notes)
+
+    def test_sketch_js_injected_before_toolbar(self):
+        html = self.req("GET", "/?t=tok")[1].decode()
+        at = [html.index(f"/_ppt/{n}") for n in ("icons-zh.js", "sketch.js", "toolbar.js")]
+        self.assertEqual(at, sorted(at))
+
+
 class DrawIconTests(ServerCase):
     def test_kind_kept_and_summarised(self):
         self.req("POST", "/api/event?t=tok", {"type": "intent", "kind": "draw-icon", "slide_id": "s-cover",

@@ -15,9 +15,11 @@ HERE = Path(__file__).resolve().parent
 MAX_BODY = 10 * 1024 * 1024
 MAX_SHOT = 5 * 1024 * 1024
 MAX_TEXT = 4000
+MAX_NOTES = 50
+MAX_NOTE = 200
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
 FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
-               "blocks": list, "text": str, "issues": list, "quote": dict}
+               "blocks": list, "text": str, "issues": list, "quote": dict, "notes": list}
 HEARTBEAT_SECS = 10
 ONLINE_SECS = 30
 HISTORY_MAX = 200
@@ -30,6 +32,7 @@ INJECT = ('<link rel="stylesheet" href="/_ppt/editor.css" data-ppt>'
           '<script src="/_ppt/ops.js" data-ppt></script>'
           '%s'
           '<script src="/_ppt/icons-zh.js" data-ppt></script>'
+          '<script src="/_ppt/sketch.js" data-ppt></script>'
           '<script src="/_ppt/toolbar.js" data-ppt></script>'
           '<script src="/_ppt/editor.js" data-ppt></script>')
 ICONS_JS = '<script src="/_ppt/icons.js" data-ppt></script>'
@@ -112,6 +115,9 @@ def clean_event(body):
     bad = [k for k, t in FIELD_TYPES.items() if k in ev and not isinstance(ev[k], t)]
     if bad or not all(isinstance(b, str) for b in ev.get("blocks", [])):
         raise ValueError(f"bad field types: {bad or ['blocks']}")
+    notes = ev.get("notes")
+    if notes is not None and (len(notes) > MAX_NOTES or not all(isinstance(n, str) and len(n) <= MAX_NOTE for n in notes)):
+        raise ValueError("bad notes")
     q = ev.get("quote")
     if q is not None and not (isinstance(q.get("text"), str) and q["text"] and len(q["text"]) <= MAX_TEXT
                               and all(isinstance(q.get(k, ""), str) for k in ("before", "after"))):
@@ -173,8 +179,9 @@ def summary(e):
     text = e.get("text") or e.get("label") or (json.dumps(e["issues"], ensure_ascii=False) if e.get("issues") else "")
     re_ = f" re:{e['re']}" if e.get("re") else ""
     quote = f" quote:「{e['quote']['text'][:20]}」" if e.get("quote") else ""
+    notes = " notes:" + "".join(f"「{n[:10]}」" for n in e["notes"][:3]) if e.get("notes") else ""
     kind = f" kind:{e['kind']}" if e.get("kind") else ""
-    line = f"{e['id']} {e['type']}{kind}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote} {text[:60]}"
+    line = f"{e['id']} {e['type']}{kind}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote}{notes} {text[:60]}"
     return " ".join(line.split())
 
 

@@ -677,6 +677,9 @@ try {
   py('--reply', 'decks/e2e-smoke', ie.id, '导入了 2 页，动画没有保留'); await sleep(3000);
   check('I2 Claude\'s reply pops up with a link to the original', ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导入了 2 页')
     && (await ev(`[...document.querySelectorAll('.ppt-toast a')].some((a) => a.textContent === '打开原稿' && decodeURI(a.getAttribute('href')) === ${JSON.stringify(ie.original)})`)));
+  b9 = await byTitle('导入以前做过的 HTML'); await click(b9.x, b9.y); await sleep(400);
+  check('I2 dialogs sit above pop-up notices', await ev(`(() => { const i = document.querySelector('.ppt-import input[placeholder^="或粘贴网页网址"]'), r = i.getBoundingClientRect();
+    return [[r.left + 10, r.top + r.height / 2], [r.right - 10, r.top + r.height / 2]].every(([x, y]) => document.elementFromPoint(x, y) === i); })()`));
   await open(url); await sleep(2000);
   check('I2 the reply pops up only once', !((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导入了 2 页'));
   // ---- add new checks above ----

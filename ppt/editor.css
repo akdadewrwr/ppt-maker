@@ -79,3 +79,4 @@ body { padding-top: 48px; }
 .ppt-batch-note { width: 100%; min-height: 56px; box-sizing: border-box; margin-bottom: 6px; }
 .ppt-batch-shot { display: block; max-width: 100%; max-height: 120px; margin: 4px 0; border: 1px solid #e5e7eb; border-radius: 4px; }
 .ppt-batch .ppt-kb-item textarea { width: 100%; min-height: 48px; box-sizing: border-box; }
+.ppt-toast a { display: inline-block; margin-top: 4px; color: #2563eb; }

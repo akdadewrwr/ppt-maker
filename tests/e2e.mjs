@@ -655,6 +655,30 @@ try {
   check('Q storage full: item kept without its screenshot', (await batchLen()) === 2 && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('不带截图'));
   await ev(`Storage.prototype.setItem = window.__realSet; localStorage.setItem('ppt-batch:' + PPT.token, '{"note":"","items":[]}')`);
   await open(url); await sleep(500);
+  // ---- 5: import ----
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  const revealPath = path.join(SCRATCH, '旧稿.html');
+  fs.writeFileSync(revealPath, '<html><body><div class="reveal"><div class="slides"><section><h1>导入测试</h1></section><section>二</section></div></div><script>localStorage.setItem("stolen", "1")</script></body></html>');
+  b9 = await byTitle('导入以前做过的 HTML'); await click(b9.x, b9.y); await sleep(400);
+  check('I2 the dialog suggests appending to a deck that is not empty', (await ev(`document.querySelector('.ppt-import select[title="放到哪"]')?.value`)) === 'append');
+  { const d = await send('DOM.getDocument'); const q = await send('DOM.querySelector', { nodeId: d.result.root.nodeId, selector: '.ppt-import input[type=file]' }); await send('DOM.setFileInputFiles', { files: [revealPath], nodeId: q.result.nodeId }); }
+  await sleep(2500);
+  const ie = inbox().at(-1);
+  check('I2 file import: event with hint, stored original', ie?.type === 'import' && ie.kind === 'file' && ie.mode === 'append' && ie.hint === 'slides' && fs.existsSync(ie.source)
+    && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('已提交导入'), JSON.stringify(ie));
+  await send('Page.navigate', { url: new URL(encodeURI(ie.original), url).href }); await sleep(1500);
+  check('I2 original opens sandboxed: its script cannot touch our storage', ((await ev(`document.body.textContent`)) || '').includes('导入测试')
+    && (await ev(`(() => { try { return localStorage.getItem('stolen'); } catch { return 'blocked'; } })()`)) !== '1',
+    JSON.stringify({ at: await ev(`location.href`), body: await ev(`document.body?.textContent?.slice(0, 80)`) }));
+  await open(url); await sleep(500);
+  b9 = await byTitle('导入以前做过的 HTML'); await click(b9.x, b9.y); await sleep(400);
+  const iu = await rectOf('.ppt-import input[placeholder^="或粘贴网页网址"]'); await click(iu.x, iu.y); await type('https://example.com/report'); await enter(); await sleep(2000);
+  check('I2 url import event', inbox().at(-1)?.type === 'import' && inbox().at(-1).kind === 'url' && inbox().at(-1).source === 'https://example.com/report', JSON.stringify(inbox().at(-1)));
+  py('--reply', 'decks/e2e-smoke', ie.id, '导入了 2 页，动画没有保留'); await sleep(3000);
+  check('I2 Claude\'s reply pops up with a link to the original', ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导入了 2 页')
+    && (await ev(`[...document.querySelectorAll('.ppt-toast a')].some((a) => a.textContent === '打开原稿' && decodeURI(a.getAttribute('href')) === ${JSON.stringify(ie.original)})`)));
+  await open(url); await sleep(2000);
+  check('I2 the reply pops up only once', !((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导入了 2 页'));
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

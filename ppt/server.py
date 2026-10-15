@@ -5,7 +5,7 @@
   python ppt/server.py --tail <deck_dir>                        print pending/new events, one line each
   python ppt/server.py --reply <deck_dir> <event_id> [text] [--ack]
 """
-import argparse, base64, hashlib, json, mimetypes, secrets, sys, threading, time, webbrowser
+import argparse, base64, hashlib, json, mimetypes, re, secrets, sys, threading, time, webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -546,7 +546,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "not found"})
         rel = f.relative_to(deck.resolve()).parts if root == deck else ()
         sandbox = {"Content-Security-Policy": "sandbox"} if rel[:1] == ("imports",) else None  # imported pages never run as us
-        self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream", sandbox)
+        data, ctype = f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+        if ctype == "text/html" and not re.search(rb"<meta[^>]+charset", data[:4096], re.I):
+            ctype = "text/html; charset=utf-8"  # an html that never says its encoding is almost always utf-8
+        self.send(200, data, ctype, sandbox)
 
     def read_json(self):
         if self.too_large:

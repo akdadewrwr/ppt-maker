@@ -53,6 +53,7 @@
     btn(top, '✎ 草图', '在当前页上画草图', () => cb.sketch());
     btn(top, '+草图页', '插入空白页并画草图', () => cb.addSketchSlide());
     btn(top, '📚 知识库', '打开知识库', () => cb.kb());
+    const importBtn = btn(top, '导入', '导入以前做过的 HTML', () => openImport(importBtn));
     const batchBtn = btn(top, '📝 清单', '打开待发清单', () => cb.batch()); batchBtn.hidden = true;
     sep(top);
     btn(top, '+页', '在当前页之后插入空白页', () => cb.addSlide());
@@ -115,7 +116,28 @@
       cb.place(icons, { left: Math.max(8, Math.min(ar.left, innerWidth - 348)), top: ar.bottom + 4 });
       setTimeout(() => q.focus());
     }
-    const popups = [pop, menu, icons];
+    // ---- import dialog: an old html (or a zip with its pictures), or a web page ----
+    const imp = el('div', 'ppt-abs ppt-icons ppt-import', ui); imp.hidden = true;
+    imp.addEventListener('keydown', (k) => { if (k.key === 'Escape') imp.hidden = true; });
+    function openImport(anchor) {
+      imp.textContent = ''; imp.hidden = false;
+      el('b', null, imp, '导入以前做过的 HTML');
+      const row = el('div', 'ppt-row', imp);
+      const mode = el('select', null, row); mode.title = '放到哪';
+      [['append', '追加到末尾'], ['replace', '替换当前 deck']].forEach(([v, l]) => { el('option', null, mode, l).value = v; });
+      mode.value = cb.importMode();
+      const file = el('input', null, row); file.type = 'file'; file.accept = '.html,.htm,.zip'; file.hidden = true;
+      file.addEventListener('change', () => { if (file.files[0]) { imp.hidden = true; cb.importFile(file.files[0], mode.value); } file.value = ''; });
+      btn(row, '选择文件', '选择 .html / .htm，或把 HTML 和图片打包成 .zip', () => file.click());
+      const r2 = el('div', 'ppt-row', imp);
+      const url = el('input', null, r2); url.placeholder = '或粘贴网页网址 https://…';
+      const go = () => { if (url.value.trim()) { imp.hidden = true; cb.importUrl(url.value.trim(), mode.value); } };
+      url.addEventListener('keydown', (k) => { if (k.key === 'Enter') { k.preventDefault(); go(); } });
+      btn(r2, '导入', '导入这个网页', go);
+      const ar = anchor.getBoundingClientRect();
+      cb.place(imp, { left: Math.max(8, Math.min(ar.left, innerWidth - 348)), top: ar.bottom + 4 });
+    }
+    const popups = [pop, menu, icons, imp];
     document.addEventListener('mousedown', (e) => {
       for (const p of popups) if (!p.hidden && !p.contains(e.target) && !e.target.closest('.ppt-colorbtn')) p.hidden = true;
     }, true);

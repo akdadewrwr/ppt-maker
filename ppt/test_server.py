@@ -986,6 +986,7 @@ class ImporterTests(ServerCase):
         body = r.read().decode()
         c.close()
         self.assertEqual((r.status, r.getheader("Content-Security-Policy")), (200, "sandbox"))
+        self.assertIn("charset=utf-8", r.getheader("Content-Type"))  # no <meta charset>: Chinese must not turn into mojibake
         self.assertIn("导入测试", body)
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         c.request("GET", "/?t=tok", headers={"Host": f"127.0.0.1:{self.port}"})

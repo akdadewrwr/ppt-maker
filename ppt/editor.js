@@ -63,6 +63,7 @@
     sketch: () => openSketch(currentSlide()), addSketchSlide,
     kb: () => { batchPanel.toggle(false); kbPanel.toggle(); },
     batch: () => { kbPanel.toggle(false); batchPanel.toggle(); },
+    importFile, importUrl, importMode,
     inkColor(c) {
       if (!c || !isObj(selected)) return;
       rememberColor(c);
@@ -277,6 +278,7 @@
       const r = await fetch(api('/api/state'), { cache: 'no-store' });
       if (!r.ok) throw new Error(String(r.status));
       state = await r.json(); offline = false; online = state.online;
+      announceImports();
       const typing = drag || pop || sketch || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t.value.trim() || t === document.activeElement));
       if (!editing && !saving && !typing && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing
       flush();
@@ -491,6 +493,37 @@
     });
   });
 
+  // ---- import an old html / zip / web page: Claude converts it; its reply pops up once ----
+  function importMode() { // an untouched template deck gets replaced, anything else gets the import appended
+    const ss = slides();
+    return ss.length === 1 && ss[0].querySelectorAll('.block').length <= 2 && (document.getElementById('b-cover-title')?.textContent || '').trim() === '标题' ? 'replace' : 'append';
+  }
+  async function postImport(path, init) {
+    try {
+      const r = await fetch(path, init);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || String(r.status));
+      toast('已提交导入，等 Claude 转换');
+    } catch (e) { toast(`没有导入：${e.message}`); }
+  }
+  function importFile(f, mode) {
+    if (!/\.(html?|zip)$/i.test(f.name)) return toast('只能导入 .html、.htm 或 .zip');
+    if (f.size > 50 * 1024 * 1024) return toast('文件超过 50MB');
+    return postImport(api('/api/import') + `&mode=${mode}&name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f });
+  }
+  function importUrl(u, mode) {
+    return postImport(api('/api/import/url'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: u, mode }) });
+  }
+  function announceImports() {
+    const seen = new Set(ls.get('ppt-import-seen', []));
+    let changed = false;
+    for (const e of state?.events || []) {
+      if (e.type !== 'import' || e.status !== 'done' || !e.reply || seen.has(e.id)) continue;
+      seen.add(e.id); changed = true;
+      toast(`导入完成：${e.reply}`, null, e.original);
+    }
+    if (changed) ls.set('ppt-import-seen', [...seen]);
+  }
   function askWithKb(ids, title) { // from the knowledge base panel: "use this item on the current page"
     const s = currentSlide(), r = { x: 0, y: 0, w: G.W, h: G.H };
     openPop(s, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(s) + 1} 页 · 参考《${title}》`,
@@ -651,10 +684,11 @@
     } catch { replayPending = true; offline = true; render(); } // next good poll reloads and replays
     finally { saving = false; }
   }
-  function toast(msg, text) {
+  function toast(msg, text, href) {
     const t = el('div', 'ppt-toast', ui);
     const x = el('button', 'x', t, '×'); x.onclick = () => t.remove();
     el('p', null, t, msg);
+    if (href) { const a = el('a', null, t, '打开原稿'); a.href = encodeURI(href); a.target = '_blank'; a.rel = 'noopener'; }
     if (text != null) { const ta = el('textarea', null, t); ta.value = text; ta.readOnly = true; }
   }
   function applyPending() { // after a conflict or outage: re-run unsaved ops on the fresh file

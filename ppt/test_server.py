@@ -1,10 +1,12 @@
-import http.client, io, json, shutil, socket, sys, tempfile, threading, unittest
+import http.client, io, json, os, shutil, socket, sys, tempfile, threading, unittest, zipfile
 import time as _time
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
+import kb
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import build_icons
@@ -469,6 +471,176 @@ class BuildIconsTests(unittest.TestCase):
         self.assertEqual(data["house"], {"tags": "home living", "body": '<path d="M3 10a2 2 0 0 1 1 1"/><circle cx="12" cy="12" r="3"/>'})
         self.assertEqual(data["no-tags"]["tags"], "")
         self.assertEqual((tmp / "LICENSE-lucide").read_text(encoding="utf-8"), "ISC License")
+
+
+def zip_bytes(files):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+A_NS = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+S_NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+DOCX = zip_bytes({"word/document.xml": f'<w:document {W_NS}><w:body><w:p><w:r><w:t>营收</w:t></w:r><w:r><w:t>12.3 亿</w:t></w:r></w:p>'
+                                       f'<w:p><w:r><w:t>增长 18%</w:t></w:r></w:p></w:body></w:document>'})
+_slide = lambda t: f'<p:sld xmlns:p="urn:p" {A_NS}><a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:sld>'
+PPTX = zip_bytes({"ppt/slides/slide2.xml": _slide("第二页"), "ppt/slides/slide10.xml": _slide("第十页"), "ppt/slides/slide1.xml": _slide("封面")})
+XLSX = zip_bytes({"xl/workbook.xml": f'<workbook {S_NS}><sheets><sheet name="数据"/></sheets></workbook>',
+                  "xl/sharedStrings.xml": f'<sst {S_NS}><si><t>地区</t></si><si><t>华东</t></si></sst>',
+                  "xl/worksheets/sheet1.xml": f'<worksheet {S_NS}><sheetData><row><c t="s"><v>0</v></c><c><v>2024</v></c></row>'
+                                              f'<row><c t="s"><v>1</v></c><c><v>12.3</v></c></row></sheetData></worksheet>'})
+
+
+class KbCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.proj, self.home = self.tmp / "proj", self.tmp / "home"
+        self.deck = self.proj / "decks" / "d1"
+        self.deck.mkdir(parents=True)
+        shutil.copy(TEMPLATE, self.deck / "deck.html")
+        env = mock.patch.dict(os.environ, {"PPT_PROJECT_DIR": str(self.proj), "PPT_HOME_DIR": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.r = kb.root(self.deck, "project")
+
+
+class KbModuleTests(KbCase):
+    def test_roots_follow_the_overrides(self):
+        self.assertEqual(kb.root(self.deck, "project"), self.proj / "kb")
+        self.assertEqual(kb.root(self.deck, "global"), self.home / ".ppt-maker" / "kb")
+        self.assertEqual(kb.skills_root(self.deck, "global"), self.home / ".claude" / "skills")
+        with self.assertRaises(ValueError):
+            kb.root(self.deck, "elsewhere")
+
+    def test_extract_office(self):
+        for name, data, want in (("a.docx", DOCX, "营收12.3 亿\n增长 18%"),
+                                 ("b.pptx", PPTX, "## 第 1 页\n封面\n\n## 第 2 页\n第二页\n\n## 第 3 页\n第十页"),
+                                 ("c.xlsx", XLSX, "## 工作表 数据\n地区\t2024\n华东\t12.3")):
+            (self.tmp / name).write_bytes(data)
+            self.assertEqual(kb.extract(self.tmp / name), want)
+
+    def test_add_file_extracts_and_dedupes(self):
+        item, created = kb.add_file(self.r, io.BytesIO(DOCX), len(DOCX), "报告 2025.docx", "file")
+        self.assertTrue(created)
+        self.assertRegex(item["id"], r"^k-[0-9a-z]{6}$")
+        self.assertEqual((item["type"], item["title"], item["status"]), ("file", "报告 2025", "pending"))
+        self.assertEqual((self.r / item["source"]).read_bytes(), DOCX)
+        self.assertEqual((self.r / item["text"]).read_text(encoding="utf-8"), "营收12.3 亿\n增长 18%")
+        again, created2 = kb.add_file(self.r, io.BytesIO(DOCX), len(DOCX), "另一个名字.docx", "file")
+        self.assertEqual((again["id"], created2), (item["id"], False))
+        self.assertEqual(len(kb.load(self.r)), 1)
+        self.assertEqual(len(list((self.r / "files").glob("*.docx"))), 1)
+
+    def test_add_file_validation(self):
+        for name, typ, kind in (("x.exe", "file", None), ("a.png", "ref", None), ("a.png", "file", "visual"), ("a.png", "web", None)):
+            with self.assertRaises(ValueError):
+                kb.add_file(self.r, io.BytesIO(b"x"), 1, name, typ, kind)
+        item, _ = kb.add_file(self.r, io.BytesIO(b"\x89PNG"), 4, "../../evil/截图.PNG", "ref", "visual")
+        self.assertEqual((item["kind"], item["source"]), ("visual", f"refs/{item['id']}-截图.png"))
+        with self.assertRaises(ValueError):  # the client sent fewer bytes than announced
+            kb.add_file(self.r, io.BytesIO(b"abc"), 10, "a.md", "file")
+        self.assertEqual(len(kb.load(self.r)), 1)
+
+    def test_broken_office_file_is_kept_with_a_note(self):
+        item, _ = kb.add_file(self.r, io.BytesIO(b"not a zip"), 9, "坏.docx", "file")
+        self.assertIn("文字抽取失败", item["note"])
+        self.assertNotIn("text", item)
+
+    def test_add_url_and_deck(self):
+        for url, typ, kind in (("ftp://x.com/a", "web", None), ("javascript:alert(1)", "web", None), ("https://x.com", "ref", "visual")):
+            with self.assertRaises(ValueError):
+                kb.add_url(self.r, url, typ, kind)
+        a, c1 = kb.add_url(self.r, " https://example.com/r ", "web")
+        b, c2 = kb.add_url(self.r, "https://example.com/r", "web")
+        self.assertEqual((a["source"], c1, b["id"], c2), ("https://example.com/r", True, a["id"], False))
+        cite, _ = kb.add_url(self.r, "https://example.com/r", "ref", "cite")  # same URL as a citation is a different entry
+        self.assertNotEqual(cite["id"], a["id"])
+        old = self.proj / "decks" / "old"
+        old.mkdir()
+        (old / "deck.html").write_text("<html></html>", encoding="utf-8")
+        d, _ = kb.add_deck(self.r, old)
+        self.assertEqual((d["type"], d["kind"], d["title"], d["source"]), ("ref", "deck", "old", str(old.resolve())))
+        with self.assertRaises(ValueError):
+            kb.add_deck(self.r, self.proj / "decks" / "nope")
+
+    def test_update_and_remove_to_trash(self):
+        item, _ = kb.add_file(self.r, io.BytesIO(b"# hi"), 4, "a.md", "file")
+        (self.r / "cards").mkdir()
+        (self.r / "cards" / f"{item['id']}.md").write_text("card", encoding="utf-8")
+        self.assertEqual(kb.update(self.r, item["id"], status="ready", summary="s")["status"], "ready")
+        kb.remove(self.r, item["id"])
+        self.assertEqual(kb.load(self.r), [])
+        trash = self.r / ".trash" / item["id"]
+        self.assertEqual(sorted(p.name for p in trash.iterdir()), sorted([f"{item['id']}-a.md", f"{item['id']}.md", "item.json"]))
+        with self.assertRaises(ValueError):
+            kb.update(self.r, item["id"], status="ready")
+
+    def test_remove_never_leaves_the_kb(self):
+        outside = self.tmp / "keep.txt"
+        outside.write_text("mine", encoding="utf-8")
+        kb.save(self.r, [{"id": "k-aaaaaa", "type": "file", "title": "x", "source": "../../keep.txt", "status": "ready"}])
+        kb.remove(self.r, "k-aaaaaa")
+        self.assertEqual(outside.read_text(encoding="utf-8"), "mine")
+
+    def test_save_is_atomic(self):
+        kb.save(self.r, [{"id": "k-aaaaaa"}])
+        kb.save(self.r, [{"id": "k-bbbbbb"}])
+        self.assertEqual(kb.load(self.r), [{"id": "k-bbbbbb"}])
+        self.assertEqual([p.name for p in self.r.iterdir()], ["index.json"])  # no temp files left behind
+
+    def test_bad_index_raises_and_state_reports_it(self):
+        g = kb.root(self.deck, "global")
+        g.mkdir(parents=True)
+        (g / "index.json").write_text("{oops", encoding="utf-8")
+        with self.assertRaises(kb.BadIndex):
+            kb.load(g)
+        st = kb.state(self.deck)
+        self.assertEqual(st["global"]["items"], [])
+        self.assertTrue(st["global"]["error"])
+        self.assertIsNone(st["project"]["error"])
+        self.assertEqual((g / "index.json").read_text(encoding="utf-8"), "{oops")
+
+    def test_skills_selection_and_state(self):
+        sk = self.proj / ".claude" / "skills"
+        (sk / "brand").mkdir(parents=True)
+        (sk / "brand" / "SKILL.md").write_text('---\nname: brand-guide\ndescription: "公司品牌规范"\n---\n规则', encoding="utf-8")
+        (sk / "plain").mkdir()
+        (sk / "plain" / "SKILL.md").write_text("没有 frontmatter", encoding="utf-8")
+        g = self.home / ".claude" / "skills" / "consult"
+        g.mkdir(parents=True)
+        (g / "SKILL.md").write_text("---\nname: consult\ndescription: 咨询式汇报\n---\n", encoding="utf-8")
+        self.assertEqual([(s["name"], s["description"], s["scope"]) for s in kb.skills(self.deck)],
+                         [("brand-guide", "公司品牌规范", "project"), ("plain", "", "project"), ("consult", "咨询式汇报", "global")])
+        self.assertEqual(kb.selection(self.deck), [])
+        kb.set_selection(self.deck, ["brand-guide"])
+        self.assertEqual(kb.selection(self.deck), ["brand-guide"])
+        for bad in ("brand-guide", [1], ["x" * 101]):
+            with self.assertRaises(ValueError):
+                kb.set_selection(self.deck, bad)
+        (self.proj / "decks" / "old").mkdir()
+        (self.proj / "decks" / "old" / "deck.html").write_text("x", encoding="utf-8")
+        st = kb.state(self.deck)
+        self.assertEqual((st["decks"], st["enabled"], len(st["skills"])), (["old"], ["brand-guide"], 3))
+
+    def test_digest_event_and_card(self):
+        item, _ = kb.add_file(self.r, io.BytesIO(PPTX), len(PPTX), "旧稿.pptx", "ref", "deck")
+        ev = kb.digest_event(self.deck, "project", item)
+        self.assertEqual((ev["type"], ev["kind"], ev["scope"], ev["kb_id"], ev["text"]), ("kb", "digest", "project", item["id"], "消化《旧稿》"))
+        self.assertEqual(ev["source"], str(self.r / item["source"]))
+        self.assertEqual(ev["extracted"], str(self.r / item["text"]))
+        self.assertEqual(ev["card"], str(self.r / "cards" / f"{item['id']}.md"))
+        web, _ = kb.add_url(self.r, "https://example.com", "web")
+        wev = kb.digest_event(self.deck, "project", web)
+        self.assertEqual((wev["source"], wev["snapshot"]), ("https://example.com", str(self.r / "web" / f"{web['id']}.md")))
+        (self.r / "cards").mkdir(exist_ok=True)
+        (self.r / "cards" / f"{item['id']}.md").write_text("## 摘要", encoding="utf-8")
+        self.assertEqual(kb.card(self.deck, "project", item["id"]), "## 摘要")
+        with self.assertRaises(ValueError):
+            kb.card(self.deck, "project", "../index")
 
 
 class CliTests(ServerCase):

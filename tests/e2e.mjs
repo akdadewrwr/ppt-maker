@@ -655,6 +655,27 @@ try {
   check('Q storage full: item kept without its screenshot', (await batchLen()) === 2 && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('不带截图'));
   await ev(`Storage.prototype.setItem = window.__realSet; localStorage.setItem('ppt-batch:' + PPT.token, '{"note":"","items":[]}')`);
   await open(url); await sleep(500);
+  // ---- batch review fixes ----
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  await drag(...(await SP('s-cover', 900, 100)), ...(await SP('s-cover', 1200, 200))); await sleep(300); await type('大清单'); await ctrlEnter(); await sleep(800);
+  b9 = await byTitle('打开待发清单'); await click(b9.x, b9.y); await sleep(500);
+  await ev(`window.__m = 1`);
+  fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace('<title>', '<title>R')); await sleep(3000);
+  check('QR the page still reloads while the list panel is open', (await ev(`window.__m`)) === undefined && (await batchLen()) === 1);
+  await ev(`(() => { const set = Storage.prototype.setItem; window.__realSet = set; Storage.prototype.setItem = function (k, v) { if (k.startsWith('ppt-queue') && v.includes('data:image')) throw new DOMException('full', 'QuotaExceededError'); return set.call(this, k, v); }; })()`);
+  b9 = await byTitle('打开待发清单'); await click(b9.x, b9.y); await sleep(500);
+  b9 = await byTitle('把清单作为一个整体发给 Claude'); await click(b9.x, b9.y); await sleep(2500);
+  const bq = inbox().filter((e) => e.type === 'intent').at(-1);
+  check('QR a batch too big for the send queue goes without screenshots, and says so', bq?.kind === 'batch' && bq.items[0].text === '大清单' && !bq.items[0].shot
+    && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('截图没能保存'), JSON.stringify(bq?.items));
+  await ev(`Storage.prototype.setItem = function (k, v) { if (k.startsWith('ppt-queue')) throw new DOMException('full', 'QuotaExceededError'); return window.__realSet.call(this, k, v); }`);
+  await drag(...(await SP('s-cover', 900, 100)), ...(await SP('s-cover', 1200, 200))); await sleep(300); await type('发不出去'); await ctrlEnter(); await sleep(800);
+  b9 = await byTitle('打开待发清单'); await click(b9.x, b9.y); await sleep(500);
+  b9 = await byTitle('把清单作为一个整体发给 Claude'); await click(b9.x, b9.y); await sleep(1500);
+  check('QR a batch that cannot be queued at all stays in the list', (await batchLen()) === 1
+    && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('没能发送'));
+  await ev(`Storage.prototype.setItem = window.__realSet; localStorage.setItem('ppt-batch:' + PPT.token, '{"note":"","items":[]}')`);
+  await open(url); await sleep(500);
   // ---- 5: import ----
   await ev(`scrollTo(0, 0)`); await sleep(300);
   const revealPath = path.join(SCRATCH, '旧稿.html');
@@ -666,7 +687,7 @@ try {
   const ie = inbox().at(-1);
   check('I2 file import: event with hint, stored original', ie?.type === 'import' && ie.kind === 'file' && ie.mode === 'append' && ie.hint === 'slides' && fs.existsSync(ie.source)
     && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('已提交导入'), JSON.stringify(ie));
-  await send('Page.navigate', { url: new URL(encodeURI(ie.original), url).href }); await sleep(1500);
+  await send('Page.navigate', { url: new URL(ie.original, url).href }); await sleep(1500);
   check('I2 original opens sandboxed: its script cannot touch our storage', ((await ev(`document.body.textContent`)) || '').includes('导入测试')
     && (await ev(`(() => { try { return localStorage.getItem('stolen'); } catch { return 'blocked'; } })()`)) !== '1',
     JSON.stringify({ at: await ev(`location.href`), body: await ev(`document.body?.textContent?.slice(0, 80)`) }));
@@ -676,7 +697,7 @@ try {
   check('I2 url import event', inbox().at(-1)?.type === 'import' && inbox().at(-1).kind === 'url' && inbox().at(-1).source === 'https://example.com/report', JSON.stringify(inbox().at(-1)));
   py('--reply', 'decks/e2e-smoke', ie.id, '导入了 2 页，动画没有保留'); await sleep(3000);
   check('I2 Claude\'s reply pops up with a link to the original', ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导入了 2 页')
-    && (await ev(`[...document.querySelectorAll('.ppt-toast a')].some((a) => a.textContent === '打开原稿' && decodeURI(a.getAttribute('href')) === ${JSON.stringify(ie.original)})`)));
+    && (await ev(`[...document.querySelectorAll('.ppt-toast a')].some((a) => a.textContent === '打开原稿' && a.getAttribute('href') === ${JSON.stringify(ie.original)})`)));
   b9 = await byTitle('导入以前做过的 HTML'); await click(b9.x, b9.y); await sleep(400);
   check('I2 dialogs sit above pop-up notices', await ev(`(() => { const i = document.querySelector('.ppt-import input[placeholder^="或粘贴网页网址"]'), r = i.getBoundingClientRect();
     return [[r.left + 10, r.top + r.height / 2], [r.right - 10, r.top + r.height / 2]].every(([x, y]) => document.elementFromPoint(x, y) === i); })()`));

@@ -254,10 +254,12 @@
 
   // ---- event queue (survives server restarts) ----
   let flushing = false, online = false, offline = false, state = null;
-  function enqueue(ev) {
+  function enqueue(ev) { // 'ok' | 'noshots' (kept, but without screenshots: storage was full) | false (not kept)
     const q = [...ls.get('ppt-queue', []), ev];
-    if (!ls.set('ppt-queue', q)) ls.set('ppt-queue', q.map((e) => ({ ...e, shot: undefined, items: e.items?.map((i) => ({ ...i, shot: undefined })) }))); // quota: drop screenshots
+    let stored = 'ok';
+    if (!ls.set('ppt-queue', q)) stored = ls.set('ppt-queue', q.map((e) => ({ ...e, shot: undefined, items: e.items?.map((i) => ({ ...i, shot: undefined })) }))) ? 'noshots' : false;
     flush();
+    return stored;
   }
   async function flush() {
     if (flushing) return;
@@ -279,7 +281,7 @@
       if (!r.ok) throw new Error(String(r.status));
       state = await r.json(); offline = false; online = state.online;
       announceImports();
-      const typing = drag || pop || sketch || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t.value.trim() || t === document.activeElement));
+      const typing = drag || pop || sketch || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t === document.activeElement || (t.value.trim() && !t.closest('.ppt-batch')))) // list items always hold text: only typing in them counts;
       if (!editing && !saving && !typing && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing
       flush();
     } catch { offline = true; }
@@ -432,7 +434,10 @@
     if (!b.items.length) return;
     const ev = { type: 'intent', kind: 'batch', text: (b.note || '').trim() || '按清单修改', items: b.items };
     if (JSON.stringify(ev).length > 9e6) return toast('清单太大（截图太多），请分两批发送');
-    enqueue(ev);
+    ls.set('ppt-batch', { note: '', items: [] }); // free its room first: the send queue needs about as much again
+    const stored = enqueue(ev);
+    if (!stored) { setBatch(b); return toast('清单没能发送（浏览器存储已满），已留在清单里；删掉几条带大截图的再试'); }
+    if (stored === 'noshots') toast('清单已发送，但截图没能保存（浏览器存储已满）');
     setBatch({ note: '', items: [] });
   }
   const deliver = (p, toBatch) => (toBatch ? addToBatch(p) : enqueue(p));
@@ -688,7 +693,7 @@
     const t = el('div', 'ppt-toast', ui);
     const x = el('button', 'x', t, '×'); x.onclick = () => t.remove();
     el('p', null, t, msg);
-    if (href) { const a = el('a', null, t, '打开原稿'); a.href = encodeURI(href); a.target = '_blank'; a.rel = 'noopener'; }
+    if (href) { const a = el('a', null, t, '打开原稿'); a.href = href; a.target = '_blank'; a.rel = 'noopener'; } // the server sends it url-safe
     if (text != null) { const ta = el('textarea', null, t); ta.value = text; ta.readOnly = true; }
   }
   function applyPending() { // after a conflict or outage: re-run unsaved ops on the fresh file

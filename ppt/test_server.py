@@ -907,6 +907,21 @@ class BatchTests(ServerCase):
                     {"type": "intent", "text": "x", "items": [ok]}):
             self.assertEqual(self.post(bad), 400, bad)
 
+    def test_batch_fields_are_strict(self):  # review M5: nothing extra rides inside a batch, and only intents batch
+        ok = self.item("x")
+        for bad in ({"type": "answer", "re": "e1", "kind": "batch", "items": [ok]},
+                    {"type": "lint", "kind": "batch", "items": [ok]},
+                    {"type": "intent", "kind": "batch", "items": [{**ok, "re": "e9"}]},
+                    {"type": "intent", "kind": "batch", "items": [{**ok, "issues": [{"kind": "x"}]}]}):
+            self.assertEqual(self.post(bad), 400, bad)
+
+    def test_batch_reply_follows_an_item_still_on_the_deck(self):  # review I3: item 1's slide may be gone
+        self.post({"type": "intent", "kind": "batch", "items": [self.item("旧页上的", slide_id="s-gone"), self.item("封面上的")]})
+        self.post({"type": "answer", "re": "e1", "text": "再改改"})
+        server.reply(self.deck, "e1", "改好了")
+        ev = {e["id"]: e for e in json.loads(self.req("GET", "/api/state?t=tok")[1])["events"]}
+        self.assertEqual((ev["e1-1"]["reply"], ev["e1-2"]["reply"], ev["e2"]["re"]), (None, "改好了", "e1-2"))
+
     def test_state_expands_batches(self):
         self.post({"type": "intent", "kind": "batch", "items": [self.item("一"), self.item("二", slide_id="s-2")]})
         self.post({"type": "answer", "re": "e1", "text": "第二条再大一点"})
@@ -953,6 +968,43 @@ class ImporterTests(ServerCase):
         self.assertEqual(list((self.deck / "imports").iterdir()), [])  # nothing half-imported is left behind
         self.assertFalse((self.tmp / "evil.html").exists())
 
+    def test_broken_zips_are_a_clear_400(self):  # review I2: not a dropped connection
+        self.assertEqual(self.up(b"not a zip at all", "a.zip")[0], 400)
+        self.assertEqual(self.up(zip_bytes({"a": "file", "a/b.html": "<p>x</p>"}), "clash.zip")[0], 400)
+        self.assertEqual(list((self.deck / "imports").iterdir()), [])
+
+    def test_a_member_named_like_the_upload_is_harmless(self):  # review M8
+        _, d, entry = self.save(zip_bytes({".upload.zip": "x", "index.html": "<h1>x</h1>"}), "site.zip")
+        self.assertEqual(entry.name, "index.html")
+        self.assertEqual((d / ".upload.zip").read_text(), "x")
+
+    def test_original_link_is_url_safe(self):  # review M10: '#' and spaces in a file name
+        self.up(REVEAL.encode(), "旧稿 #2.html")
+        e = inbox(self.deck)[-1]
+        self.assertEqual(e["original"], f"/imports/{e['import_id']}/" + quote("旧稿 #2.html"))
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", e["original"], headers={"Host": f"127.0.0.1:{self.port}"})
+        self.assertEqual(c.getresponse().status, 200)
+        c.close()
+
+    def test_every_deck_file_is_sandboxed_and_the_page_ignores_base(self):  # review I4: defence in depth
+        (self.deck / "assets").mkdir()
+        (self.deck / "assets" / "x.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', encoding="utf-8")
+        for path, want in (("/assets/x.svg", "sandbox"), ("/?t=tok", "base-uri 'none'")):
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            c.request("GET", path, headers={"Host": f"127.0.0.1:{self.port}"})
+            self.assertEqual(c.getresponse().getheader("Content-Security-Policy"), want, path)
+            c.close()
+
+    def test_a_declared_charset_further_down_is_respected(self):  # review M9
+        gbk = ("<html><head><style>" + "a{}" * 3000 + '</style><meta charset="gbk"></head><body>中文</body></html>').encode("gbk")
+        self.up(gbk, "gbk.html")
+        e = inbox(self.deck)[-1]
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", e["original"], headers={"Host": f"127.0.0.1:{self.port}"})
+        self.assertNotIn("utf-8", c.getresponse().getheader("Content-Type"))
+        c.close()
+
     def test_zip_bomb_stops_at_the_real_size(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -970,7 +1022,7 @@ class ImporterTests(ServerCase):
         e = inbox(self.deck)[-1]
         self.assertEqual((e["id"], e["type"], e["kind"], e["mode"], e["hint"]), (json.loads(b)["id"], "import", "file", "append", "slides"))
         self.assertTrue(Path(e["source"]).is_file())
-        self.assertEqual(e["original"], f"/imports/{e['import_id']}/旧稿.html")
+        self.assertEqual(e["original"], f"/imports/{e['import_id']}/" + quote("旧稿.html"))
         self.assertIn(" import kind:file ", server.summary(e))
         for args, code in (((b"x" * 1000, "a.html", "sideways"), 400), ((b"x" * 1000, "a.exe"), 400), ((b"x" * 1000, "a.html", "append", "bad"), 403)):
             self.assertEqual(self.up(*args)[0], code, args)
@@ -981,7 +1033,7 @@ class ImporterTests(ServerCase):
         self.up(REVEAL.encode(), "旧稿.html")
         e = inbox(self.deck)[-1]
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        c.request("GET", quote(e["original"]), headers={"Host": f"127.0.0.1:{self.port}"})
+        c.request("GET", e["original"], headers={"Host": f"127.0.0.1:{self.port}"})
         r = c.getresponse()
         body = r.read().decode()
         c.close()
@@ -990,7 +1042,7 @@ class ImporterTests(ServerCase):
         self.assertIn("导入测试", body)
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         c.request("GET", "/?t=tok", headers={"Host": f"127.0.0.1:{self.port}"})
-        self.assertIsNone(c.getresponse().getheader("Content-Security-Policy"))
+        self.assertNotIn("sandbox", c.getresponse().getheader("Content-Security-Policy"))  # the editor page itself still runs
         c.close()
 
     def test_url_import_state_and_cli(self):
@@ -1010,6 +1062,7 @@ class ImporterTests(ServerCase):
         e2 = inbox(self.deck)[-1]
         self.assertEqual((e2["type"], e2["mode"], e2["hint"]), ("import", "replace", "slides"))
         self.assertIn(e2["id"], out.getvalue())
+        self.assertEqual(e2["origin_dir"], str(src.resolve().parent))  # review M11: its pictures stay next to the original
 
 
 class CliTests(ServerCase):

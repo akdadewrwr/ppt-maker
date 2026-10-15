@@ -22,7 +22,8 @@ MAX_TEXT = 4000
 MAX_NOTES = 50
 MAX_NOTE = 200
 MAX_ITEMS = 30  # intents in one batch
-STREAMED = ("/api/kb/file", "/api/import")  # uploads written to disk as they arrive
+STREAMED = ("/api/kb/file", "/api/import")
+ITEM_FIELDS = {"slide", "slide_id", "rect", "cells", "blocks", "text", "shot", "kind", "notes", "quote", "kb"}  # uploads written to disk as they arrive
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
 REPLY_TYPES = EVENT_TYPES | {"kb", "import"}  # kb events are written by the server, not posted by the page
 FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
@@ -124,11 +125,11 @@ def clean_event(body):
     ev, shot = _fields(body)
     items = body.get("items")
     if ev.get("kind") == "batch":
-        if not isinstance(items, list) or not 0 < len(items) <= MAX_ITEMS:
+        if body["type"] != "intent" or not isinstance(items, list) or not 0 < len(items) <= MAX_ITEMS:
             raise ValueError("bad items")
         ev["items"] = []
         for it in items:
-            if not isinstance(it, dict) or "type" in it or "items" in it or it.get("kind") not in (None, "sketch"):
+            if not isinstance(it, dict) or set(it) - ITEM_FIELDS or it.get("kind") not in (None, "sketch"):
                 raise ValueError("bad item")
             fields, item_shot = _fields(it)
             ev["items"].append({**fields, **({"_shot": item_shot} if item_shot else {})})
@@ -204,17 +205,23 @@ def state(deck):
     st = statuses(deck)
     replies = {r.get("re"): r.get("text", "") for r in read_jsonl(rt / "outbox.jsonl") if not r.get("ack")}
     hb = rt / "heartbeat"
-    events, batches = [], set()
+    events, batches = [], {}
+    try:
+        html = (Path(deck) / "deck.html").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        html = ""
     for e in read_jsonl(rt / "inbox.jsonl"):
         t, status, reply = e.get("type"), st.get(e.get("id"), "queued"), replies.get(e.get("id"))
-        if t == "intent" and e.get("kind") == "batch":  # one mark per item; the reply sits by the first
-            batches.add(e["id"])
-            for i, it in enumerate(e.get("items") or [], 1):
+        if t == "intent" and e.get("kind") == "batch":  # one mark per item; the reply sits by the first one still on the deck
+            items = e.get("items") or []
+            anchor = next((i for i, it in enumerate(items, 1) if it.get("slide_id") and f'id="{it["slide_id"]}"' in html), 1)
+            batches[e["id"]] = anchor
+            for i, it in enumerate(items, 1):
                 events.append({"id": f"{e['id']}-{i}", "type": "intent", "parent": e["id"], "re": None, "slide_id": it.get("slide_id"),
-                               "rect": it.get("rect"), "text": it.get("text", ""), "status": status, "reply": reply if i == 1 else None})
+                               "rect": it.get("rect"), "text": it.get("text", ""), "status": status, "reply": reply if i == anchor else None})
         elif t in ("intent", "answer"):
             re_ = e.get("re")
-            events.append({"id": e["id"], "type": t, "re": f"{re_}-1" if re_ in batches else re_, "slide_id": e.get("slide_id"),
+            events.append({"id": e["id"], "type": t, "re": f"{re_}-{batches[re_]}" if re_ in batches else re_, "slide_id": e.get("slide_id"),
                            "rect": e.get("rect"), "text": e.get("text", ""), "status": status, "reply": reply})
         elif t == "import":
             events.append({"id": e["id"], "type": "import", "status": status, "reply": reply, "original": e.get("original")})
@@ -523,7 +530,8 @@ class Handler(BaseHTTPRequestHandler):
             inj = INJECT % (json.dumps(self.server.token), json.dumps(ver), ICONS_JS if (HERE / "icons.js").is_file() else "")
             i = html.lower().rfind("</body>")
             html = html[:i] + inj + html[i:] if i >= 0 else html + inj
-            return self.send(200, html, "text/html; charset=utf-8")
+            # a <base> copied in from an import must not redirect the editor's own /_ppt/ scripts
+            return self.send(200, html, "text/html; charset=utf-8", {"Content-Security-Policy": "base-uri 'none'"})
         if path == "/api/state":
             return self.send(200, {**state(deck), "history": self.server.history.info()})
         if path == "/api/kb":
@@ -545,9 +553,10 @@ class Handler(BaseHTTPRequestHandler):
         if not f or (root == deck and ".ppt" in f.relative_to(deck.resolve()).parts):
             return self.send(404, {"error": "not found"})
         rel = f.relative_to(deck.resolve()).parts if root == deck else ()
-        sandbox = {"Content-Security-Policy": "sandbox"} if rel[:1] == ("imports",) else None  # imported pages never run as us
+        # nothing served from the deck folder (imports, assets, anything Claude copied) ever runs as the editor
+        sandbox = {"Content-Security-Policy": "sandbox"} if root == deck else None
         data, ctype = f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream"
-        if ctype == "text/html" and not re.search(rb"<meta[^>]+charset", data[:4096], re.I):
+        if ctype == "text/html" and not re.search(rb"<meta[^>]+charset", data[:65536], re.I):
             ctype = "text/html; charset=utf-8"  # an html that never says its encoding is almost always utf-8
         self.send(200, data, ctype, sandbox)
 
@@ -685,7 +694,7 @@ def main(argv=None):
         else:
             p = Path(src)
             with p.open("rb") as f:
-                fields = importer.event(deck, *importer.save(deck, f, p.stat().st_size, p.name), mode)
+                fields = importer.event(deck, *importer.save(deck, f, p.stat().st_size, p.name), mode, origin_dir=str(p.resolve().parent))
         with LOCK:
             ev = add_event(deck, fields)
         return print(summary(ev))

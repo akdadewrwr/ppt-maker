@@ -1,8 +1,8 @@
 """ppt-maker HTML import (stdlib only): store an uploaded .html / .zip safely under decks/<name>/imports/<id>/,
 pick its entry page and guess what it is. Claude does the conversion; this only lands the files."""
-import os, re, secrets, shutil, zipfile
+import os, re, secrets, shutil, zipfile, zlib
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import kb
 
@@ -51,6 +51,15 @@ def _copy_capped(src, out, budget):
 
 
 def _unzip(zpath, d):
+    try:
+        return _unzip_checked(zpath, d)
+    except (zipfile.BadZipFile, zlib.error, RuntimeError, NotImplementedError, EOFError) as e:  # damaged or encrypted
+        raise ValueError(f"压缩包损坏或已加密：{e}") from e
+    except OSError as e:  # e.g. a file and a folder with the same name
+        raise ValueError(f"压缩包里有无法解开的条目：{e}") from e
+
+
+def _unzip_checked(zpath, d):
     with zipfile.ZipFile(zpath) as z:
         infos = [i for i in z.infolist() if not i.is_dir()]
         if len(infos) > MAX_FILES:
@@ -81,15 +90,14 @@ def save(deck, stream, length, name):
     iid = _new_id(base)
     d = base / iid
     d.mkdir()
+    tmp = base / f".{iid}.upload{ext}"  # outside the folder a zip unpacks into: no member can collide with it
     try:
-        tmp = d / f".upload{ext}"
         with tmp.open("wb") as out:
             missing = _copy_exact(stream, out, length)
         if missing:
             raise ValueError("上传不完整")
         if ext == ".zip":
             entry = _unzip(tmp, d)
-            tmp.unlink()
         else:
             entry = d / kb.safe_name(name)
             os.replace(tmp, entry)
@@ -97,6 +105,8 @@ def save(deck, stream, length, name):
     except BaseException:
         shutil.rmtree(d, ignore_errors=True)
         raise
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def hint(text):
@@ -108,10 +118,14 @@ def hint(text):
     return "page"
 
 
-def event(deck, iid, d, entry, mode):
+def event(deck, iid, d, entry, mode, origin_dir=None):
     h = hint(entry.read_text(encoding="utf-8", errors="replace")[:2_000_000])
-    return {"type": "import", "kind": "file", "mode": mode, "hint": h, "import_id": iid, "text": f"导入《{entry.name}》{mode} {h}",
-            "source": str(entry), "dir": str(d), "original": "/imports/" + entry.relative_to(Path(deck) / "imports").as_posix()}
+    rel = entry.relative_to(Path(deck) / "imports").parts
+    ev = {"type": "import", "kind": "file", "mode": mode, "hint": h, "import_id": iid, "text": f"导入《{entry.name}》{mode} {h}",
+          "source": str(entry), "dir": str(d), "original": "/imports/" + "/".join(quote(p, safe="") for p in rel)}  # a ready-to-use link
+    if origin_dir:  # imported from the terminal: its pictures and styles still sit next to the original file
+        ev["origin_dir"] = origin_dir
+    return ev
 
 
 def url_event(url, mode):

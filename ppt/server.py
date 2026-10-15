@@ -5,7 +5,7 @@
   python ppt/server.py --tail <deck_dir>                        print pending/new events, one line each
   python ppt/server.py --reply <deck_dir> <event_id> [text] [--ack]
 """
-import argparse, base64, json, mimetypes, secrets, sys, threading, time, webbrowser
+import argparse, base64, hashlib, json, mimetypes, secrets, sys, threading, time, webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,7 +16,7 @@ MAX_BODY = 10 * 1024 * 1024
 MAX_SHOT = 5 * 1024 * 1024
 MAX_TEXT = 4000
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
-FIELD_TYPES = {"type": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
+FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
                "blocks": list, "text": str, "issues": list, "quote": dict}
 HEARTBEAT_SECS = 10
 ONLINE_SECS = 30
@@ -28,8 +28,12 @@ INJECT = ('<link rel="stylesheet" href="/_ppt/editor.css" data-ppt>'
           '<script src="/_ppt/vendor/html-to-image.js" data-ppt></script>'
           '<script src="/_ppt/geom.js" data-ppt></script>'
           '<script src="/_ppt/ops.js" data-ppt></script>'
+          '%s'
+          '<script src="/_ppt/icons-zh.js" data-ppt></script>'
           '<script src="/_ppt/toolbar.js" data-ppt></script>'
           '<script src="/_ppt/editor.js" data-ppt></script>')
+ICONS_JS = '<script src="/_ppt/icons.js" data-ppt></script>'
+ASSET_MAGIC = ((b"\x89PNG\r\n\x1a\n", "png"), (b"\xff\xd8\xff", "jpg"), (b"GIF87a", "gif"), (b"GIF89a", "gif"))
 
 
 def now_iso():
@@ -69,6 +73,26 @@ def safe_path(root, rel):
     root = root.resolve()
     p = (root / unquote(rel).lstrip("/\\")).resolve()
     return p if p.is_relative_to(root) and p.is_file() else None
+
+
+def sniff_image(data):
+    """Extension for PNG/JPEG/GIF/WebP bytes, else None. SVG is refused on purpose: it can carry script."""
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return next((ext for magic, ext in ASSET_MAGIC if data.startswith(magic)), None)
+
+
+def save_asset(deck, data):
+    """Store an uploaded image as assets/<sha1[:12]>.<ext>; identical bytes reuse the same file."""
+    ext = sniff_image(data)
+    if not ext:
+        raise ValueError("only PNG, JPEG, GIF or WebP images")
+    d = Path(deck) / "assets"
+    d.mkdir(exist_ok=True)
+    name = f"{hashlib.sha1(data).hexdigest()[:12]}.{ext}"
+    if not (d / name).exists():
+        (d / name).write_bytes(data)
+    return f"assets/{name}"
 
 
 def clean_event(body):
@@ -140,7 +164,8 @@ def summary(e):
     text = e.get("text") or e.get("label") or (json.dumps(e["issues"], ensure_ascii=False) if e.get("issues") else "")
     re_ = f" re:{e['re']}" if e.get("re") else ""
     quote = f" quote:「{e['quote']['text'][:20]}」" if e.get("quote") else ""
-    line = f"{e['id']} {e['type']}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote} {text[:60]}"
+    kind = f" kind:{e['kind']}" if e.get("kind") else ""
+    line = f"{e['id']} {e['type']}{kind}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote} {text[:60]}"
     return " ".join(line.split())
 
 
@@ -290,8 +315,11 @@ class Handler(BaseHTTPRequestHandler):
             # read the body before any reply: closing with unread bytes makes Windows reset the
             # socket, and the client never sees our 403/404
             n = int(self.headers.get("Content-Length") or 0)
-            self.body = self.rfile.read(n) if 0 < n <= MAX_BODY else b""
             self.too_large = n > MAX_BODY
+            # ponytail: drain up to 4x the limit so the 413 arrives; anything bigger just gets the socket reset
+            self.body = self.rfile.read(n) if 0 < n <= 4 * MAX_BODY else b""
+            if self.too_large:
+                self.body = b""
         port = self.server.server_address[1]
         if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send(403, {"error": "bad host"})
@@ -312,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             ver = deck_version(deck)  # read version first: a racing write only causes one extra reload
             html = (deck / "deck.html").read_text(encoding="utf-8")
-            inj = INJECT % (json.dumps(self.server.token), json.dumps(ver))
+            inj = INJECT % (json.dumps(self.server.token), json.dumps(ver), ICONS_JS if (HERE / "icons.js").is_file() else "")
             i = html.lower().rfind("</body>")
             html = html[:i] + inj + html[i:] if i >= 0 else html + inj
             return self.send(200, html, "text/html; charset=utf-8")
@@ -338,6 +366,13 @@ class Handler(BaseHTTPRequestHandler):
         url = self.guard(need_token=True)
         if not url:
             return
+        if url.path == "/api/asset":
+            if self.too_large:
+                return self.send(413, {"error": "image larger than 10MB"})
+            try:
+                return self.send(200, {"src": save_asset(self.server.deck, self.body)})
+            except ValueError as e:
+                return self.send(415, {"error": str(e)})
         if url.path in ("/api/undo", "/api/redo"):
             kind = url.path[len("/api/"):]
             with LOCK:

@@ -1,6 +1,7 @@
 import http.client, json, shutil, socket, sys, tempfile, threading, unittest
 import time as _time
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
@@ -224,6 +225,73 @@ class QuoteTests(ServerCase):
         s = server.summary({"id": "e1", "type": "intent", "slide_id": "s1", "blocks": ["b"], "text": "改正式",
                             "quote": {"text": "在幻灯片上指给 agent 看，而不是说给它听"}})
         self.assertIn("quote:「在幻灯片上指给 agent 看，而不是", s)
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+
+
+class AssetTests(ServerCase):
+    def post_raw(self, path, data, ctype="image/png"):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("POST", path, data, {"Host": f"127.0.0.1:{self.port}", "Content-Type": ctype})
+        r = c.getresponse()
+        out = (r.status, r.read())
+        c.close()
+        return out
+
+    def test_png_saved_by_content_hash_and_reused(self):
+        status, body = self.post_raw("/api/asset?t=tok", PNG_BYTES)
+        self.assertEqual(status, 200)
+        src = json.loads(body)["src"]
+        self.assertRegex(src, r"^assets/[0-9a-f]{12}\.png$")
+        self.assertEqual((self.deck / src).read_bytes(), PNG_BYTES)
+        self.assertEqual(json.loads(self.post_raw("/api/asset?t=tok", PNG_BYTES)[1])["src"], src)
+        self.assertEqual(len(list((self.deck / "assets").iterdir())), 1)
+        self.assertEqual(self.req("GET", "/" + src)[0], 200)  # the page loads it like any deck file
+
+    def test_type_from_magic_bytes_not_header(self):
+        for data, ext in ((b"\xff\xd8\xff\xe0" + b"0" * 20, "jpg"), (b"GIF89a" + b"0" * 20, "gif"),
+                          (b"RIFF\0\0\0\0WEBPVP8 " + b"0" * 20, "webp")):
+            status, body = self.post_raw("/api/asset?t=tok", data, "application/octet-stream")
+            self.assertEqual((status, json.loads(body)["src"].rsplit(".", 1)[1]), (200, ext))
+
+    def test_svg_and_junk_rejected(self):
+        for data in (b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', b"hello", b""):
+            self.assertEqual(self.post_raw("/api/asset?t=tok", data, "image/svg+xml")[0], 415)
+        self.assertFalse((self.deck / "assets").exists())
+
+    def test_needs_token(self):
+        self.assertEqual(self.post_raw("/api/asset", PNG_BYTES)[0], 403)
+        self.assertEqual(self.post_raw("/api/asset?t=bad", PNG_BYTES)[0], 403)
+
+    def test_too_large(self):
+        with mock.patch.object(server, "MAX_BODY", 16):
+            self.assertEqual(self.post_raw("/api/asset?t=tok", PNG_BYTES)[0], 413)
+        self.assertFalse((self.deck / "assets").exists())
+
+
+class DrawIconTests(ServerCase):
+    def test_kind_kept_and_summarised(self):
+        self.req("POST", "/api/event?t=tok", {"type": "intent", "kind": "draw-icon", "slide_id": "s-cover",
+                                              "rect": {"x": 608, "y": 328, "w": 64, "h": 64}, "blocks": [], "text": "一只猫"})
+        e = inbox(self.deck)[-1]
+        self.assertEqual(e["kind"], "draw-icon")
+        self.assertIn("intent kind:draw-icon slide:s-cover", server.summary(e))
+        self.assertEqual(self.req("POST", "/api/event?t=tok", {"type": "intent", "kind": 5, "text": "x"})[0], 400)
+
+    def test_icons_injected_between_ops_and_toolbar(self):
+        html = self.req("GET", "/?t=tok")[1].decode()
+        at = [html.index(f"/_ppt/{n}") for n in ("ops.js", "icons.js", "icons-zh.js", "toolbar.js", "editor.js")]
+        self.assertEqual(at, sorted(at))
+
+    def test_icons_js_optional(self):
+        with mock.patch.object(server, "HERE", self.tmp):  # a checkout where build_icons.py was never run
+            html = self.req("GET", "/?t=tok")[1].decode()
+        self.assertNotIn("/_ppt/icons.js", html)
+        self.assertIn("/_ppt/icons-zh.js", html)
+
+    def test_template_has_object_rules(self):
+        self.assertIn(".obj { position:absolute; box-sizing:border-box; }", TEMPLATE.read_text(encoding="utf-8"))
 
 
 class HistoryTests(ServerCase):

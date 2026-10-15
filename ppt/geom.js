@@ -70,6 +70,49 @@
 
   const gridStr = (g) => `${g.r1}/${g.c1}/${g.r2}/${g.c2}`;
 
+  function geomOf(o) { // floating object box in canvas px; derived from layout when Claude left a size out
+    const s = o.style, m = /rotate\((-?[\d.]+)deg\)/.exec(s.transform || ''), rot = m ? +m[1] : 0;
+    if (![s.left, s.top, s.width, s.height].every((v) => /px$/.test(v))) return { ...elementRect(o.closest('section.slide').getBoundingClientRect(), o), rot };
+    return { x: parseFloat(s.left), y: parseFloat(s.top), w: parseFloat(s.width), h: parseFloat(s.height), rot };
+  }
+
+  function arrowEnds(o) { // canvas-px endpoints; null when the arrow has no <line> (then it is handled like any box)
+    const l = o.dataset.kind === 'arrow' && o.querySelector(':scope > svg > line');
+    if (!l) return null;
+    const g = geomOf(o), a = (n) => parseFloat(l.getAttribute(n)) || 0;
+    return { x1: g.x + a('x1'), y1: g.y + a('y1'), x2: g.x + a('x2'), y2: g.y + a('y2') };
+  }
+
+  function dragGeom(g, dx, dy, handle, shift) { // free (no grid); a resize works in the object's own rotated axes
+    if (handle === 'move') {
+      if (shift) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+      return { ...g, x: Math.round(g.x + dx), y: Math.round(g.y + dy) };
+    }
+    const MIN = 8, t = g.rot * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+    const lx = dx * c + dy * s, ly = -dx * s + dy * c; // pointer delta in the object's own axes
+    let L = 0, T = 0, R = g.w, B = g.h;
+    if (handle.includes('w')) L += lx;
+    if (handle.includes('e')) R += lx;
+    if (handle.includes('n')) T += ly;
+    if (handle.includes('s')) B += ly;
+    if (shift && handle.length === 2 && g.w && g.h) { // corner + Shift: keep the aspect ratio, anchored at the opposite corner
+      const k = Math.max(MIN / Math.min(g.w, g.h), (R - L) / g.w, (B - T) / g.h);
+      if (handle.includes('w')) L = R - g.w * k; else R = L + g.w * k;
+      if (handle.includes('n')) T = B - g.h * k; else B = T + g.h * k;
+    }
+    if (R - L < MIN) { if (handle.includes('w')) L = R - MIN; else R = L + MIN; }
+    if (B - T < MIN) { if (handle.includes('n')) T = B - MIN; else B = T + MIN; }
+    const w = R - L, h = B - T, mx = (L + R - g.w) / 2, my = (T + B - g.h) / 2; // centre shift, own axes
+    const cx = g.x + g.w / 2 + mx * c - my * s, cy = g.y + g.h / 2 + mx * s + my * c;
+    return { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w: Math.round(w), h: Math.round(h), rot: g.rot };
+  }
+
+  function rotateTo(g, px, py, shift) { // the rotate handle sits above the top edge: pointer straight up = 0deg
+    let d = Math.atan2(py - (g.y + g.h / 2), px - (g.x + g.w / 2)) * 180 / Math.PI + 90;
+    if (shift) d = Math.round(d / 15) * 15;
+    return { ...g, rot: Math.round(((d % 360) + 540) % 360 - 180) };
+  }
+
   function lint(slide) {
     const out = [], sr = slide.getBoundingClientRect(), sid = slide.id || null, doc = slide.ownerDocument;
     const blocks = [...slide.querySelectorAll('.block')];
@@ -88,8 +131,17 @@
           out.push({ kind: 'overlap', block: kids[i].id || null, other: kids[j].id || null, slide_id: sid });
       }
     }
+    for (const o of slide.querySelectorAll('.obj')) { // floating objects never count as overlapping blocks
+      if (!o.id) { out.push({ kind: 'missing-id', block: null, slide_id: sid }); continue; }
+      if (doc.querySelectorAll('#' + CSS.escape(o.id)).length > 1) out.push({ kind: 'duplicate-id', block: o.id, slide_id: sid });
+      const s = o.style;
+      if (![s.left, s.top, s.width, s.height].every((v) => /px$/.test(v))) { out.push({ kind: 'obj-geometry', block: o.id, slide_id: sid }); continue; }
+      const g = geomOf(o), M = 16;
+      if (g.x < -M || g.y < -M || g.x + g.w > W + M || g.y + g.h > H + M) out.push({ kind: 'obj-outside', block: o.id, slide_id: sid });
+    }
     return out;
   }
 
-  window.PPTGeom = { W, H, COLS, ROWS, clientToSlide, elementRect, slideToClient, rectToCells, hitBlocks, lint, gridOf, dragGrid, gridStr };
+  window.PPTGeom = { W, H, COLS, ROWS, clientToSlide, elementRect, slideToClient, rectToCells, hitBlocks, lint, gridOf, dragGrid, gridStr,
+                     geomOf, arrowEnds, dragGeom, rotateTo };
 })();

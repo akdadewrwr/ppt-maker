@@ -6,6 +6,8 @@
            grid-template-columns:repeat(16,minmax(0,1fr)); grid-template-rows:repeat(9,minmax(0,1fr)); }
   .block { box-sizing:border-box; padding:8px; min-width:0; min-height:0; }
   .block.grid { display:grid; gap:8px; }
+  .slide { position:relative; }
+  .obj { position:absolute; box-sizing:border-box; }
   .pass { color:#16a34a } .fail { color:#dc2626 }
 </style></head><body>
 <h1 id="result">running…</h1><ol id="log"></ol>
@@ -20,6 +22,13 @@
 <section class="slide" id="s2">
   <div class="block" id="e" style="grid-row:2/4;grid-column:3/span 2">span-based</div>
   <div class="block" id="f" style="grid-area:1/1/-1/-1"></div>
+</section>
+<section class="slide" id="s3">
+  <div class="obj" id="g1" data-kind="arrow" style="left:92px;top:92px;width:216px;height:16px;transform:rotate(30deg)"><svg viewBox="0 0 216 16"><line x1="8" y1="8" x2="208" y2="8"/></svg></div>
+  <div class="obj" id="g2" data-kind="shape" style="left:10px;top:10px">no size</div>
+  <div class="obj" id="g3" data-kind="icon" style="left:1300px;top:10px;width:64px;height:64px"></div>
+  <div class="obj" data-kind="icon" style="left:0px;top:0px;width:8px;height:8px"></div>
+  <div class="obj" id="g4" data-kind="image" style="left:-10px;top:700px;width:100px;height:30px"></div>
 </section>
 <script src="geom.js"></script>
 <script src="ops.js"></script>
@@ -65,6 +74,23 @@
   check('dragGrid resize nw clamps', G.dragGrid(g0, -1000, -1000, 'nw'), {r1:1,c1:1,r2:6,c2:9});
   check('gridStr', G.gridStr(g0), '3/2/6/9');
   check('gridOf negative lines use layout', G.gridOf(document.getElementById('f')), {r1:1,c1:1,r2:10,c2:17});
+
+  // ---- 2b: floating object geometry ----
+  check('geomOf reads inline px + rotation', G.geomOf(document.getElementById('g1')), {x:92,y:92,w:216,h:16,rot:30});
+  check('arrowEnds of an arrow / of an icon', [G.arrowEnds(document.getElementById('g1')), G.arrowEnds(document.getElementById('g3'))], [{x1:100,y1:100,x2:300,y2:100}, null]);
+  const og = {x:100, y:100, w:100, h:50, rot:0};
+  check('dragGeom move free', G.dragGeom(og, 13, -7, 'move'), {x:113,y:93,w:100,h:50,rot:0});
+  check('dragGeom move Shift locks to the larger axis', G.dragGeom(og, 30, 10, 'move', true), {x:130,y:100,w:100,h:50,rot:0});
+  check('dragGeom e', G.dragGeom(og, 20, 99, 'e'), {x:100,y:100,w:120,h:50,rot:0});
+  check('dragGeom w keeps the right edge', G.dragGeom(og, 20, 0, 'w'), {x:120,y:100,w:80,h:50,rot:0});
+  check('dragGeom min size 8', G.dragGeom(og, -500, 0, 'e'), {x:100,y:100,w:8,h:50,rot:0});
+  check('dragGeom Shift corner keeps ratio', G.dragGeom(og, 50, 0, 'se', true), {x:100,y:100,w:150,h:75,rot:0});
+  check('dragGeom rotated 90: e follows the rotated axis', G.dragGeom({...og, rot:90}, 0, 20, 'e'), {x:90,y:110,w:120,h:50,rot:90});
+  check('rotateTo pointer right = 90', G.rotateTo(og, 300, 125), {...og, rot:90});
+  check('rotateTo pointer above = 0', G.rotateTo(og, 150, 0), {...og, rot:0});
+  const a40 = -40 * Math.PI / 180;
+  check('rotateTo Shift snaps to 15', G.rotateTo(og, 150 + 100 * Math.cos(a40), 125 + 100 * Math.sin(a40), true), {...og, rot:45});
+  check('lint objects', G.lint(document.getElementById('s3')).map((i) => `${i.kind}:${i.block}`).sort(), ['missing-id:null', 'obj-geometry:g2', 'obj-outside:g3']);
 
   // ---- ops ----
   const O = PPTOps;

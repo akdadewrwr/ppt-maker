@@ -124,6 +124,7 @@ def clean_event(body):
         raise ValueError("bad quote")
     if len(str(ev.get("text", ""))) > MAX_TEXT:
         raise ValueError("text too long")
+    json.dumps(ev, ensure_ascii=False).encode("utf-8")  # a lone surrogate would fail later, in the inbox write
     shot = None
     if body.get("shot"):
         b64 = str(body["shot"]).split(",", 1)[-1]

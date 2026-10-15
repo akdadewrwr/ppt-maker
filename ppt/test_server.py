@@ -304,6 +304,15 @@ class SketchTests(ServerCase):
         for notes in (["ok", 5], ["x"] * 51, ["长" * 201], "标题"):
             self.assertEqual(self.req("POST", "/api/event?t=tok", {"type": "intent", "kind": "sketch", "text": "x", "notes": notes})[0], 400, notes)
 
+    def test_unencodable_text_rejected_not_dropped(self):  # review I5: a lone surrogate jammed the page's event queue
+        for body in (b'{"type": "intent", "text": "x", "notes": ["\\ud83d"]}', b'{"type": "intent", "text": "x\\ud83d"}'):
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            c.request("POST", "/api/event?t=tok", body, {"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json"})
+            r = c.getresponse()
+            r.read()
+            c.close()
+            self.assertEqual(r.status, 400, body)
+
     def test_sketch_js_injected_before_toolbar(self):
         html = self.req("GET", "/?t=tok")[1].decode()
         at = [html.index(f"/_ppt/{n}") for n in ("icons-zh.js", "sketch.js", "toolbar.js")]

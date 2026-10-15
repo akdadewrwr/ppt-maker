@@ -14,7 +14,7 @@ argument-hint: <deck 名字或主题>
 ## 处理事件
 摘要格式：`e17 intent slide:s-intro [b-right,b-r1] 文字…`。完整内容在 `decks/<名字>/.ppt/inbox.jsonl`，按 id 查。
 - 处理 intent / answer / lint 之前先标记：`python ppt/server.py --reply "decks/<名字>" <id> --ack`
-- **intent**：有 `shot` 就用 Read 看截图（路径相对 deck 目录）。先重新读 deck.html，再只改 `blocks` 列出的块或对象（`o-` 开头的是浮动对象；第一个是最内层）；`blocks` 为空时按 `cells`（列范围/行范围）在该区域新建块。不动无关块。
+- **intent**：有 `shot` 就用 Read 看截图（路径相对 deck 目录）。先重新读 deck.html，再只改 `blocks` 列出的块或对象（先列块，第一个是最内层的块；`o-` 开头的浮动对象排在块后面）；`blocks` 为空时按 `cells`（列范围/行范围）在该区域新建块。不动无关块。
 - **intent 且 `kind` 为 `draw-icon`**：用户想要一个图标库里没有的图标，`text` 是描述。在 `slide_id` 页按 `rect` 的位置和大小新建一个图标对象（格式见规则 10），自己画 24×24 的线条图：只用 `path / circle / rect / line / polyline`，不写颜色和线宽（它们由对象的 `color`、`stroke-width` 控制），风格与 Lucide 一致（圆角端点、2px 线、简洁）。新 id 以 `o-` 开头。
 - **intent 且 `kind` 为 `sketch`**：用户画了草图。用 Read 看 `shot`（整页截图，草图画在上面）：线条和框表示布局意图，箭头表示关系或流程；`notes` 是用户打的标注，以它的原文为准，不要从图里认字。不要把手绘线条原样搬进 deck，要做成正式的块、表格、形状、箭头或图标，并遵守格式规则。已有页只改 `blocks` 列出的块和对象，以及草图范围（`rect`）内需要新建的内容，除非用户的话另有说明；空白页（没有块）按草图生成整页。看不懂就在回执里问一个具体问题。
 - **intent 带 `quote`**（用户在改字模式下选中文字后右键发来的）：只改这段原文。在 `blocks[0]` 里找 `quote.text`；出现多次时用 `quote.before` / `quote.after` 定位。只替换这一处，块里其他内容一律不动；没有截图，也不用看。原文已找不到时，在回执里问用户，不要猜。

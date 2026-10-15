@@ -135,6 +135,7 @@
     if (!O.hasObjBase(document)) commit({ op: 'ensureBase', label: '补充对象样式' }); // an older deck: same save as the object
     commit({ op: 'insertObj', args: { id, slideId: slide.id, ...args }, label: `插入${KIND_ZH[args.kind]} ${id}` });
     select(document.getElementById(id));
+    return id;
   }
   function drawShape(slide, shape, a, b) { // a/b: canvas-px points where the drag started and ended
     const click = Math.abs(b.x - a.x) < 6 && Math.abs(b.y - a.y) < 6;
@@ -175,9 +176,11 @@
   // ---- sketch mode: freehand over one slide, then send it to Claude or keep it as ink ----
   function openSketch(slide) {
     if (sketch || !slide) return;
+    if (!slide.id) return toast(NO_ID); // drafts and the ink object are keyed by the slide id
     if (editing) endEdit();
     closePop(); disarm(); select(null);
-    sketch = PPTSketch.open(slide, { place, ls, toast, onClose: () => { sketch = null; closePop(); },
+    document.documentElement.classList.add('ppt-sketching'); // top bar off: undo, page and insert buttons would act under the board
+    sketch = PPTSketch.open(slide, { place, ls, toast, onClose: () => { sketch = null; closePop(); document.documentElement.classList.remove('ppt-sketching'); },
       send: (items) => sendSketch(slide, items), keep: (items) => keepSketch(slide, items) });
   }
   function addSketchSlide() {
@@ -188,9 +191,9 @@
     n.scrollIntoView({ block: 'center' });
     openSketch(n);
   }
-  function sendSketch(slide, items) {
-    const r = PPTSketch.bounds(items, 8, true), notes = items.filter((i) => i.type === 'note').map((i) => i.text);
-    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · 草图`, async (text) => {
+  function sendSketch(slide, getItems) { // the board stays live under the box: read the sketch when it is sent
+    openPop(slide, PPTSketch.bounds(getItems(), 8, true), el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · 草图`, async (text) => {
+      const items = getItems(), r = PPTSketch.bounds(items, 8, true), notes = items.filter((i) => i.type === 'note').map((i) => i.text);
       sketch?.close(true);
       let shot = null;
       try { // the whole slide, sketch burnt on top: Claude needs the surroundings too
@@ -203,9 +206,8 @@
     }, '按草图修改这一页');
   }
   function keepSketch(slide, items) {
-    const { geom, html } = PPTSketch.inkSVG(items);
-    sketch?.close(true);
-    addObj(slide, { kind: 'ink', geom, html });
+    const { geom, html } = PPTSketch.inkSVG(items), id = addObj(slide, { kind: 'ink', geom, html });
+    sketch?.close(!!document.getElementById(id)); // the draft goes only once the ink is really there
   }
   function setZ(dir) {
     if (!isObj(selected)) return;
@@ -388,6 +390,7 @@
   });
 
   function openPop(slide, r, box, label, onSend, fallback = '') {
+    closePop(); // one box at a time: an orphaned one could not be closed and would hold off reloads
     const cr = G.slideToClient(slide.getBoundingClientRect(), r);
     place(box, cr);
     const node = el('div', 'ppt-abs ppt-pop', ui);
@@ -531,6 +534,7 @@
                                  : { op: 'setHTML', target: owner.id, args: { html, text: true }, label: `改字 ${owner.id}` });
   }
   document.addEventListener('paste', (e) => {
+    if (sketch) return; // the sketch board owns the page
     if (editing) { // plain text only: no foreign markup, remote images or pasted pictures inside text
       if (!editing.block.contains(e.target)) return;
       e.preventDefault();
@@ -545,6 +549,7 @@
   document.addEventListener('drop', (e) => {
     const slide = e.target.closest?.('section.slide'), f = e.dataTransfer?.files?.[0];
     if (!slide || !f) return;
+    if (sketch) return e.preventDefault();
     e.preventDefault(); // never let the browser navigate away to the dropped file
     const p = G.clientToSlide(slide.getBoundingClientRect(), e.clientX, e.clientY, e.clientX, e.clientY);
     addImage(f, { slide, x: p.x, y: p.y });

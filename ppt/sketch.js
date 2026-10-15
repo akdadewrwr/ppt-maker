@@ -108,8 +108,10 @@
     btn('↶', '撤销上一笔', () => { if (undo.length) { items = undo.pop(); saved(); } });
     btn('清空', '清空草图', () => change([]));
     sep();
-    btn('发给 Claude', '把草图发给 Claude', () => (items.length ? cb.send(items) : cb.toast('还没有画内容')), 'ppt-ask');
-    btn('保留为笔迹', '把草图留在幻灯片上', () => (items.length ? cb.keep(items) : cb.toast('还没有画内容')));
+    // a note still being typed counts; send gets a getter: strokes drawn while its box is open go along too
+    const exit = (fn) => { endNote(true); if (items.length) fn(); else cb.toast('还没有画内容'); };
+    btn('发给 Claude', '把草图发给 Claude', () => exit(() => cb.send(() => items)), 'ppt-ask');
+    btn('保留为笔迹', '把草图留在幻灯片上', () => exit(() => cb.keep(items)));
     btn('取消', '退出草图（草稿会保留）', () => close(false));
 
     function setMode(m) { mode = m; paint(); }
@@ -124,7 +126,8 @@
     function position() {
       const r = slide.getBoundingClientRect(), bh = bar.offsetHeight || 36;
       cb.place(svg, { left: r.left, top: r.top, width: r.width, height: r.height });
-      cb.place(bar, { left: Math.max(8, r.left), top: Math.max(56, Math.min(r.top - bh - 8, r.bottom - bh - 8)) });
+      // above the slide when there is room under the top bar, else just below it: never over the drawing area
+      cb.place(bar, { left: Math.max(8, r.left), top: r.top - bh - 8 >= 56 ? r.top - bh - 8 : Math.min(r.bottom + 8, innerHeight - bh - 8) });
       if (note) { const p = G.slideToClient(r, { x: note.p.x, y: note.p.y, w: 0, h: 0 }); cb.place(note.el, { left: p.left, top: p.top }); }
     }
     const pt = (e) => G.clientToSlide(slide.getBoundingClientRect(), e.clientX, e.clientY, e.clientX, e.clientY);
@@ -167,7 +170,7 @@
     }
     function endNote(keep) {
       if (!note) return;
-      const { el, p } = note, text = el.value.trim().slice(0, 200);
+      const { el, p } = note, text = [...el.value.trim()].slice(0, 200).join(''); // by code point: never split an emoji
       note = null; el.remove();
       if (keep && text) change([...items, { type: 'note', color, x: p.x, y: p.y, text }]);
     }

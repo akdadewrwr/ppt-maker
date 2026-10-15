@@ -37,6 +37,10 @@
   <div class="obj" id="g8" data-kind="shape" style="left:10px;top:10px;width:20px;height:20px;transform:rotate(0.25turn)"></div>
   <div class="obj" id="g9" data-kind="shape" style="left:40px;top:10px;width:20px;height:20px;transform:rotate(1.5707963rad)"></div>
 </section>
+<section class="slide" id="s5">
+  <div class="block" id="h1" style="grid-area:1/1/3/5">block</div>
+  <div class="obj" id="h2" data-kind="image" style="left:10px;top:10px;width:50px;height:50px"></div>
+</section>
 <script src="geom.js"></script>
 <script src="ops.js"></script>
 <script src="icons.js"></script>
@@ -107,6 +111,7 @@
   check('rotateTo Shift snaps to 15', G.rotateTo(og, 150 + 100 * Math.cos(a40), 125 + 100 * Math.sin(a40), true), {...og, rot:45});
   check('lint objects', G.lint(document.getElementById('s3')).map((i) => `${i.kind}:${i.block}`).sort(), ['missing-id:null', 'obj-geometry:g2', 'obj-outside:g3']);
   check('hitBlocks also returns objects', G.hitBlocks(document.getElementById('s3'), { x: 95, y: 195, w: 5, h: 5 }), ['g5']);
+  check('hitBlocks lists blocks before objects (ppt.md: first is the innermost block)', G.hitBlocks(document.getElementById('s5'), { x: 20, y: 20, w: 5, h: 5 }), ['h1', 'h2']);
 
   // ---- ops ----
   const O = PPTOps;

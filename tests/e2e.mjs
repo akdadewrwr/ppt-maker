@@ -507,6 +507,31 @@ try {
   b8 = await byTitle('插入空白页并画草图'); await click(b8.x, b8.y); await sleep(2500);
   check('K +草图页 adds a blank slide and opens sketch mode on it', nSlides() === ns0 + 1 && !!(await ev(`document.querySelector('.ppt-sketch')`)));
   await key('Escape', 'Escape', 27); await sleep(500);
+  // ---- sketch review fixes ----
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(300);
+  const barR = await ev(`(() => { const b = document.querySelector('.ppt-sketchbar').getBoundingClientRect(), s = document.getElementById('s-cover').getBoundingClientRect(); return {bt: b.top, bb: b.bottom, st: s.top, sb: s.bottom}; })()`);
+  check('KR the sketch bar never covers the slide', barR.bb <= barR.st || barR.bt >= barR.sb, JSON.stringify(barR));
+  const deckK = deckHtml();
+  b8 = await byTitle('撤销'); await click(b8.x, b8.y); await sleep(2500);
+  check('KR the top bar is inert while sketching', deckHtml() === deckK && !!(await ev(`document.querySelector('.ppt-sketch')`)));
+  const nImgK = (deckHtml().match(/data-kind="image"/g) || []).length;
+  await ev(`${fileJs}.then((dt) => document.body.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})))`); await sleep(2000);
+  check('KR paste does not insert an image while sketching', (deckHtml().match(/data-kind="image"/g) || []).length === nImgK);
+  await drag(...P(100, 100), ...P(300, 100)); await sleep(200);
+  b8 = await byTitle('T 标注'); await click(b8.x, b8.y); await click(...P(100, 400)); await sleep(300); await type('最后');
+  b8 = await byTitle('把草图发给 Claude'); await click(b8.x, b8.y); await sleep(300);
+  b8 = await byTitle('把草图发给 Claude'); await click(b8.x, b8.y); await sleep(300);
+  check('KR a second click does not stack send boxes', (await ev(`document.querySelectorAll('.ppt-pop').length`)) === 1);
+  b8 = await byTitle('画笔'); await click(b8.x, b8.y); await drag(...P(900, 600), ...P(1100, 650)); await sleep(200);
+  const kta = await rectOf('.ppt-pop textarea'); await click(kta.x, kta.y); await enter(); await sleep(3000);
+  const kr = inbox().filter((e) => e.type === 'intent').at(-1);
+  check('KR a note typed but not confirmed is still sent', JSON.stringify(kr?.notes || []).includes('最后'), JSON.stringify({ ...kr, shot: !!kr?.shot }));
+  check('KR strokes drawn while the send box is open are sent too', !!kr && kr.rect.x + kr.rect.w >= 1100, JSON.stringify(kr?.rect));
+  { const h = deckHtml(), at = h.lastIndexOf('</body>'); fs.writeFileSync(path.join(DECK, 'deck.html'), h.slice(0, at) + '<section class="slide"><div class="block" style="grid-area:2/2/4/8">无 id 页</div></section>\n' + h.slice(at)); }
+  await sleep(2500); await ev(`document.querySelector('section.slide:not([id])').scrollIntoView({block: 'center'})`); await sleep(500);
+  b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(500);
+  check('KR a slide without id cannot be sketched on', !(await ev(`document.querySelector('.ppt-sketch')`)) && /id/.test((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || ''));
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

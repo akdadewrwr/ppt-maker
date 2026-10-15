@@ -36,9 +36,9 @@
     ? r.x >= a.x && r.x < a.x + a.w && r.y >= a.y && r.y < a.y + a.h
     : overlapArea(a, r) > 0;
 
-  function hitBlocks(slide, r) { // objects first (they are on top), then blocks innermost first
+  function hitBlocks(slide, r) { // blocks innermost first (ppt.md: the first is the innermost block), then objects top first
     const sr = slide.getBoundingClientRect(), hit = (sel) => [...slide.querySelectorAll(sel)].filter((b) => touches(elementRect(sr, b), r));
-    return [...hit('.obj[id]').reverse(), ...hit('.block[id]').sort((a, b) => depth(b) - depth(a))].map((b) => b.id);
+    return [...hit('.block[id]').sort((a, b) => depth(b) - depth(a)), ...hit('.obj[id]').reverse()].map((b) => b.id);
   }
 
   function gridOf(el) { // the block's grid lines; derived from layout when Claude used spans or no inline grid-area

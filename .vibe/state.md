@@ -1,16 +1,21 @@
 ## 上一轮完成
-- 按用户要求修改全局 /ppt（C:/Users/user/.claude/commands/ppt.md，仓库外）：deck 改为放在当前会话工作目录下的 decks/<名字>/，程序和模板仍从 ppt-maker 读取。
-- 验证过：deck 放在仓库外时服务正常（页面、编辑脚本、/api/state 都返回 200，.ppt 运行时目录建在 deck 旁边）。
+- 知识库（子项目 4）：spec、plan、4 个 task 全部实现，分支 feat/kb（到 3ad6784，已推送）。
+- 测试：server 72 OK、selftest 99/99、e2e 142/142。真实会话验收通过（临时项目，验完删除；没有写进用户主目录）。
+- 草图分支已合并到 main（a0d493b）。
+- 整个分支的最终审查已派出：opus 审查员在后台运行。
 
 ## 关键结论
-- deck 跟着项目走：在哪个目录启动 Claude Code，deck 就建在那里的 decks/ 下；在 ppt-maker 目录下用效果不变。
-- 全局入口只做转发：读取仓库里的 ppt.md，ppt/… 换成 PPT_HOME 绝对路径，decks/… 换成 cwd 下的绝对路径。
+- 知识库分项目级（<项目>/kb）和全局（~/.ppt-maker/kb），资料由 Claude 消化成卡片，用 --kb-done / --kb-fail 更新目录。
+- Skills 复用 Claude Code 的 .claude/skills；每个 deck 在 decks/<名字>/kb.json 里勾选启用。
+- 页面有"📚 知识库"侧栏（资料 / 参考 / Skills）。"用在这一页"发出的意图带 kb 字段。
+- ppt.md 新规则：消化、写 Skill、使用资料（出处小字、不编造、按风格卡片调整）。
+- 测试和验收用 PPT_PROJECT_DIR / PPT_HOME_DIR 隔离，不碰真实知识库。
 
 ## 改动文件
-- C:/Users/user/.claude/commands/ppt.md（仓库外）；.vibe/state.md
+- ppt/kb.py（新）、ppt/kb-panel.js（新）、server.py、editor.js、toolbar.js、editor.css、test_server.py、tests/e2e.mjs、ppt.md；kb 的 spec 和 plan
 
 ## 当前 blocker
-- 等用户在另一个 session 里试用草图功能的反馈；feat/sketch 尚未合并。
+- 等审查结果：Critical / Important 问题先用 TDD 修完，再问用户是否合并。
 
 ## 下一步
-- 根据试用反馈修改，或者合并后进入知识库子项目。
+- 修完审查发现的问题，列出全部 Ruling 和延后的小问题，问用户是否合并；之后是 UI 改进、导出 pptx。

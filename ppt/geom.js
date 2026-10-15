@@ -76,10 +76,12 @@
     return { x: parseFloat(s.left), y: parseFloat(s.top), w: parseFloat(s.width), h: parseFloat(s.height), rot };
   }
 
-  function arrowEnds(o) { // canvas-px endpoints; null when the arrow has no <line> (then it is handled like any box)
-    const l = o.dataset.kind === 'arrow' && o.querySelector(':scope > svg > line');
+  function arrowEnds(o) { // canvas-px endpoints, or null: then the arrow is moved and resized like any box
+    const l = o.dataset.kind === 'arrow' && ['line', 'arrow', 'arrow2'].includes(o.dataset.shape) && o.querySelector(':scope > svg > line');
     if (!l) return null;
     const g = geomOf(o), a = (n) => parseFloat(l.getAttribute(n)) || 0;
+    // only arrows drawn the way setArrow redraws them (unrotated, viewBox = box size); others would be mangled
+    if (g.rot || l.parentElement.getAttribute('viewBox') !== `0 0 ${g.w} ${g.h}`) return null;
     return { x1: g.x + a('x1'), y1: g.y + a('y1'), x2: g.x + a('x2'), y2: g.y + a('y2') };
   }
 

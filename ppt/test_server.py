@@ -1,4 +1,4 @@
-import http.client, json, shutil, socket, sys, tempfile, threading, unittest
+import http.client, io, json, shutil, socket, sys, tempfile, threading, unittest
 import time as _time
 from pathlib import Path
 from unittest import mock
@@ -268,6 +268,20 @@ class AssetTests(ServerCase):
         with mock.patch.object(server, "MAX_BODY", 16):
             self.assertEqual(self.post_raw("/api/asset?t=tok", PNG_BYTES)[0], 413)
         self.assertFalse((self.deck / "assets").exists())
+
+
+class DrainTests(unittest.TestCase):
+    def test_drain_discards_in_chunks(self):  # review M4: an oversized body must not be buffered whole
+        reads = []
+
+        class F(io.BytesIO):
+            def read(self, n=-1):
+                reads.append(n)
+                return super().read(n)
+
+        f = F(b"x" * 200_000)
+        server.drain(f, 200_000)
+        self.assertEqual((f.tell(), max(reads)), (200_000, 65536))
 
 
 class DrawIconTests(ServerCase):

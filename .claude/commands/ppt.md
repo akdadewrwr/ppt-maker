@@ -36,7 +36,8 @@ argument-hint: <deck 名字或主题>
 9. 不要创建或修改 `.ppt/history/`，撤销由页面完成。
 10. 浮动对象（形状、箭头、图标、图片）：`<div class="obj" id="o-…" data-kind="shape|arrow|icon|image" style="left:…px;top:…px;width:…px;height:…px">`，放在所属页内所有块之后，DOM 顺序即上下层级。坐标是画布像素；旋转只写 `transform:rotate(…deg)`。对象 style 只写：`left, top, width, height, transform, fill, stroke, stroke-width, color, opacity, border, border-radius, box-shadow`。
     - 形状：`data-shape` 为 `rect|round|ellipse|triangle`；内含 `<svg viewBox="0 0 宽 高">`，与对象尺寸一致（改尺寸时按新尺寸重画）；填充/线条写在对象的 `fill / stroke / stroke-width` 上，不写在 svg 里。形状里的文字放 `<div class="obj-text">…</div>`（在 svg 之后）。
-    - 箭头：`data-shape` 为 `line|arrow|arrow2`；svg 里一条 `<line>`（端点是对象内坐标，四周留 8px）加箭头 `<polyline … fill="none">`。
+    - 箭头：`data-shape` 为 `line|arrow|arrow2`；svg `viewBox="0 0 宽 高"` 与对象尺寸一致，里面一条 `<line>`（端点是对象内坐标，四周留 8px）加箭头 `<polyline … fill="none">`。箭头不旋转（方向由两端点决定），线条颜色和粗细写在对象的 `stroke / stroke-width` 上。
     - 图标：`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">…</svg>`，颜色写对象的 `color`，线宽写 `stroke-width:2`。
     - 图片：`<img src="assets/…" alt="">`，只用 `assets/` 下已有的文件。
-    - `#base` 里的 `.obj` 规则由页面维护，不要改。
+    - `#base` 里的 `.obj` 规则由页面维护，不要改。唯一例外：你要新建对象而 `#base` 里还没有 `.obj {` 规则（旧 deck）时，在 `#base` 末尾原样补上这四行：
+      `.obj { position:absolute; box-sizing:border-box; }` / `.obj > svg, .obj > img { display:block; width:100%; height:100%; overflow:visible; }` / `.obj > img { object-fit:cover; border-radius:inherit; }` / `.obj-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:8px; }`

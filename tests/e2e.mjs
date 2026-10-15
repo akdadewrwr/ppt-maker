@@ -378,6 +378,17 @@ try {
   check('I new object is selected', !!(await byTitle('填充')));
   await key('z', 'KeyZ', 90, 2); await sleep(3000);
   check('I undo removes the object and the added rules together', !deckHtml().includes('data-shape="ellipse"') && !/\.obj\s*\{/.test(deckHtml()));
+  // let Claude draw: the first object action in an old deck
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  b6 = await byTitle('插入图标'); await click(b6.x, b6.y); await sleep(300);
+  const di = await rectOf('.ppt-icons input[placeholder^="没有合适的"]'); await click(di.x, di.y);
+  await type('一只猫'); await enter(); await sleep(2000);
+  const dIcon = inbox().filter((e) => e.type === 'intent').at(-1);
+  check('I "let Claude draw" sends a draw-icon intent', dIcon?.kind === 'draw-icon' && dIcon.text === '一只猫' && dIcon.slide_id === 's-cover' && dIcon.rect?.w === 64, JSON.stringify(dIcon));
+  check('I "let Claude draw" in an old deck adds the object rules Claude needs', /\.obj\s*\{/.test(deckHtml()));
+  await ev(`window.__marker = 1`);
+  fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace('<title>', '<title>C')); await sleep(2500);   // Claude answers
+  check('I page still reloads after the icon panel closed with text in it', (await ev(`window.__marker`)) === undefined);
   await ev(`scrollTo(0, 0)`); await sleep(300);
   b6 = await byTitle('插入形状'); await click(b6.x, b6.y); await sleep(200);
   b6 = await byTitle('画箭头'); await click(b6.x, b6.y); await sleep(200);
@@ -392,11 +403,6 @@ try {
   check('I arrow keys in the icon search do not move the selection', (deckHtml().match(/data-kind="arrow"[^>]*style="left: (\d+)px/) || [])[1] === arBefore && arBefore === '552');
   b6 = await byTitle('house'); await click(b6.x, b6.y); await sleep(2000);
   check('I icon inserted at the slide centre, 64px, Lucide markup', /data-kind="icon" style="left: 608px; top: 328px; width: 64px; height: 64px;[^"]*"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"[^>]*><path d="M15 21v-8/.test(deckHtml()));
-  b6 = await byTitle('插入图标'); await click(b6.x, b6.y); await sleep(300);
-  const di = await rectOf('.ppt-icons input[placeholder^="没有合适的"]'); await click(di.x, di.y);
-  await type('一只猫'); await enter(); await sleep(2000);
-  const dIcon = inbox().at(-1);
-  check('I "let Claude draw" sends a draw-icon intent', dIcon?.type === 'intent' && dIcon.kind === 'draw-icon' && dIcon.text === '一只猫' && dIcon.slide_id === 's-cover' && dIcon.rect?.w === 64, JSON.stringify(dIcon));
   // images: file picker, paste, drop
   const pngPath = path.join(SCRATCH, 'wide.png'); fs.writeFileSync(pngPath, png(960, 480));
   const docN = await send('DOM.getDocument');
@@ -417,6 +423,11 @@ try {
   await ev(`${fileJs}.then((dt) => document.activeElement.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})))`); await sleep(2000);
   await key('Escape', 'Escape', 27); await sleep(1500);
   check('I paste image while typing inserts nothing', nImg() === 3);
+  // a move replayed after a save conflict is still the user's own: no lint for Claude
+  const nl6 = inbox().filter((e) => e.type === 'lint').length;
+  await ev(`localStorage.setItem('ppt-ops:' + PPT.token, JSON.stringify([{op: 'setArrow', target: 'o-ar', args: {x1: 1500, y1: 100, x2: 1700, y2: 100}, label: '移动 o-ar'}]))`);
+  await send('Page.reload'); await sleep(3500);
+  check('I replayed user move off the canvas raises no lint', inbox().filter((e) => e.type === 'lint').length === nl6 && /id="o-ar"[^>]*left: 1492px/.test(deckHtml()), `${nl6} -> ${inbox().filter((e) => e.type === 'lint').length}`);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

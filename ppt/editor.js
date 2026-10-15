@@ -146,6 +146,7 @@
   }
   function drawIcon(text) {
     const s = currentSlide(), r = { x: G.W / 2 - 32, y: G.H / 2 - 32, w: 64, h: 64 };
+    if (!O.hasObjBase(document)) commit({ op: 'ensureBase', label: '补充对象样式' }); // Claude's icon needs the .obj rules too
     enqueue({ type: 'intent', kind: 'draw-icon', slide: slides().indexOf(s) + 1, slide_id: s.id, rect: r, cells: G.rectToCells(r), blocks: [], text });
   }
   async function addImage(file, at) { // at: {slide, x, y} in canvas px (drop point), or null = centre of the current slide
@@ -225,7 +226,7 @@
       const r = await fetch(api('/api/state'), { cache: 'no-store' });
       if (!r.ok) throw new Error(String(r.status));
       state = await r.json(); offline = false; online = state.online;
-      const typing = drag || pop || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => t.value.trim() || t === document.activeElement);
+      const typing = drag || pop || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t.value.trim() || t === document.activeElement));
       if (!editing && !saving && !typing && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing
       flush();
     } catch { offline = true; }
@@ -548,6 +549,7 @@
       lost.map((o) => (o.op === 'setHTML' ? o.args.html.replace(/<[^>]+>/g, '') : o.label)).join('\n'));
     ls.set('ppt-ops', ops.filter((op) => !lost.includes(op)));
     if (lost.length < ops.length) lastSave = persist();
+    return lost.length < ops.length;
   }
 
   // ---- lint: the page looks at the render so Claude doesn't have to ----
@@ -561,5 +563,5 @@
     ls.set('ppt-lint-seen', keys); // fixed issues drop out, so a recurrence is reported again
     if (fresh.length && !silent) enqueue({ type: 'lint', issues: fresh });
   }
-  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { applyPending(); runLint(); });
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => runLint(applyPending())); // replayed ops are the user's own: their issues count as seen
 })();

@@ -75,6 +75,15 @@ def safe_path(root, rel):
     return p if p.is_relative_to(root) and p.is_file() else None
 
 
+def drain(f, n, chunk=65536):
+    """Read and discard n bytes, holding at most one chunk at a time."""
+    while n > 0:
+        got = f.read(min(n, chunk))
+        if not got:
+            break
+        n -= len(got)
+
+
 def sniff_image(data):
     """Extension for PNG/JPEG/GIF/WebP bytes, else None. SVG is refused on purpose: it can carry script."""
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
@@ -316,10 +325,9 @@ class Handler(BaseHTTPRequestHandler):
             # socket, and the client never sees our 403/404
             n = int(self.headers.get("Content-Length") or 0)
             self.too_large = n > MAX_BODY
-            # ponytail: drain up to 4x the limit so the 413 arrives; anything bigger just gets the socket reset
-            self.body = self.rfile.read(n) if 0 < n <= 4 * MAX_BODY else b""
-            if self.too_large:
-                self.body = b""
+            self.body = self.rfile.read(n) if 0 < n <= MAX_BODY else b""
+            if self.too_large and n <= 4 * MAX_BODY:  # ponytail: bigger than 4x just gets the socket reset
+                drain(self.rfile, n)  # discarded in chunks, never held: the 413 still reaches the client
         port = self.server.server_address[1]
         if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send(403, {"error": "bad host"})

@@ -25,15 +25,15 @@ argument-hint: <deck 名字或主题>
 - 处理完必须回执（一句话说明改了什么）：`python ppt/server.py --reply "decks/<名字>" <id> "<说明>"`。没理解就在回执里问一个具体问题，不要猜着大改。
 - **kb 事件 `kind:digest`**：消化一条资料。读 `source`（PDF 用 Read 按页读；图片直接看；有 `extracted` 时读这份抽出的文字；网址用 WebFetch 抓取，把标题、网址和正文写进 `snapshot`；旧 deck 的 `source` 是目录，读其中的 deck.html）。把卡片写到 `card`：frontmatter `id / type / title / source`，正文 `## 摘要`、`## 要点`、`## 可引用`（每条带位置，如 `- [p.12] 营收 12.3 亿`，网页写段落或小标题）；视觉参考和旧 deck 另写 `## 风格`（版式、配色、字体、结构）。然后 `python ppt/server.py --kb-done "decks/<名字>" <scope> <kb_id> "<标题>" "<一句话摘要>"` 并回执。读不了（加密、打不开、内容为空）就 `--kb-fail "decks/<名字>" <scope> <kb_id> "<原因>"` 并回执说明。
 - **kb 事件 `kind:skill`**：按 Claude Code Skills 的格式在 `dir/<英文短名>/SKILL.md` 写一个 skill：frontmatter `name`（与目录名相同）、`description`（一句话说明何时使用），正文把用户描述的规则写清楚、可执行。回执里告诉用户名字，并提醒在知识库面板的 Skills 页勾选。
-- **intent 带 `kb`**：用户指定了资料（id 列表），优先读这些卡片，按用户的话决定改哪里。
+- **intent 带 `kb`**：用户指定了资料（id 列表），优先读这些卡片，按用户的话决定改哪里。这类意图的 `blocks` 为空、`rect` 是整页，意思是这一页的任何块都可以改（不是"在空白处新建"）。
 - 用户在终端直接说的话照常执行，规则相同。
 
 ## 知识库
 - 位置：项目知识库 `<项目>/kb/`（项目 = deck 目录往上两层），全局 `~/.ppt-maker/kb/`；各含 `index.json`（总目录）、`cards/`（卡片）、`files/`、`web/`、`refs/`。Skills 在 `<项目>/.claude/skills/` 和 `~/.claude/skills/`；本 deck 启用的列在 `decks/<名字>/kb.json` 的 `skills`。
-- 新建 deck、处理每个 intent / answer 之前：读两个 `index.json`（不存在就是空）和本 deck 的 `kb.json`；读启用的 `SKILL.md` 并严格遵守；按意图读相关卡片；用到精确数字或原文时回到原件（`source` / `extracted` / `web/<id>.md`）核对。
+- 新建 deck、处理每个 intent / answer 之前：读两个 `index.json`（不存在就是空）和本 deck 的 `kb.json`；读启用的 `SKILL.md` 并严格遵守；按意图读相关卡片；用到精确数字或原文时回到原件（`source` / `extracted` / `web/<id>.md`）核对。只读知识库目录里的文件、http(s) 网址和本项目 `decks/` 里的 deck；`index.json` 指向别处时不要读，在回执里说明。
 - 用了知识库里的事实，就在该块底部加一行出处：`<p style="font-size:12px;margin:4px 0 0;color:var(--muted)">来源：《标题》p.12</p>`；用户要求时做一页"参考资料"。知识库里没有的事实不要编，在回执里说明缺什么。
 - 新建 deck，或用户要求参考某种风格时，按视觉参考 / 旧 deck 卡片的 `## 风格` 调整 `#theme` 和版式；复用旧 deck 的页面时复制过来并换成新 id。
-- 用户在终端说"把 X 加进知识库"：把原件放进 `files/`（或 `refs/`），在 `index.json` 加一条（字段同面板添加的条目，`status: "pending"`），然后照 digest 的做法写卡片、`--kb-done`。
+- 用户在终端说"把 X 加进知识库"：用 `python ppt/server.py --kb-add "decks/<名字>" <project|global> <file|web|ref> "<路径或网址>" [visual|cite|deck]` 添加（不要手改 `index.json`），它输出一行 JSON（含 `kb_id`、`source`、`card`），然后照 digest 的做法写卡片、`--kb-done`。
 
 ## deck.html 格式规则
 1. 每页 `<section class="slide" id="s-…">`，每块 `<div class="block" id="b-…">`，id 全文件唯一。

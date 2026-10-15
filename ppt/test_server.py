@@ -626,6 +626,75 @@ class KbModuleTests(KbCase):
         st = kb.state(self.deck)
         self.assertEqual((st["decks"], st["enabled"], len(st["skills"])), (["old"], ["brand-guide"], 3))
 
+    def test_upload_does_not_lose_a_concurrent_update(self):  # review I1: --kb-done landing while a file streams in
+        first, _ = kb.add_file(self.r, io.BytesIO(b"# a"), 3, "a.md", "file")
+        r = self.r
+
+        class Racing(io.BytesIO):
+            def read(s, n=-1):
+                if s.tell() == 0:
+                    kb.update(r, first["id"], status="ready")
+                return super().read(n)
+        kb.add_file(self.r, Racing(b"# b"), 3, "b.md", "file")
+        self.assertEqual([i["status"] for i in kb.load(self.r)], ["ready", "pending"])
+
+    def test_save_retries_a_busy_index_and_cleans_up(self):  # review I1: Windows refuses to replace an open file
+        real, calls = os.replace, []
+
+        def flaky(a, b):
+            calls.append(1)
+            if len(calls) < 3:
+                raise PermissionError("busy")
+            return real(a, b)
+        with mock.patch("kb.os.replace", flaky):
+            kb.save(self.r, [{"id": "k-aaaaaa"}])
+        self.assertEqual(kb.load(self.r), [{"id": "k-aaaaaa"}])
+        with mock.patch("kb.os.replace", side_effect=PermissionError("busy")):
+            with self.assertRaises(PermissionError):
+                kb.save(self.r, [])
+        self.assertEqual([p.name for p in self.r.iterdir()], ["index.json"])
+
+    def test_extraction_never_breaks_an_upload(self):  # review I3
+        bad_xlsx = zip_bytes({"xl/workbook.xml": f'<workbook {S_NS}><sheets><sheet name="s"/></sheets></workbook>',
+                              "xl/worksheets/sheet1.xml": f'<worksheet {S_NS}><sheetData><row><c t="s"><v/></c></row></sheetData></worksheet>'})
+        item, _ = kb.add_file(self.r, io.BytesIO(bad_xlsx), len(bad_xlsx), "坏表.xlsx", "file")
+        self.assertIn("文字抽取失败", item["note"])
+        with mock.patch("kb.extract", side_effect=RuntimeError("encrypted")):
+            item2, _ = kb.add_file(self.r, io.BytesIO(DOCX), len(DOCX), "加密.docx", "file")
+        self.assertIn("encrypted", item2["note"])
+        with mock.patch("kb.save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                kb.add_file(self.r, io.BytesIO(b"# c"), 3, "c.md", "file")
+        self.assertEqual(sorted(p.name.split("-", 2)[-1] for p in (self.r / "files").glob("k-*")), sorted(["坏表.xlsx", "加密.docx"]))
+
+    def test_extracted_text_is_capped(self):  # review I4: a huge sheet must not be held whole in memory or on disk
+        with mock.patch.object(kb, "MAX_TEXT_OUT", 10):
+            item, _ = kb.add_file(self.r, io.BytesIO(DOCX), len(DOCX), "长.docx", "file")
+        text = (self.r / item["text"]).read_text(encoding="utf-8")
+        self.assertTrue(text.endswith("（已截断）"), text)
+        self.assertLess(len(text), 40)
+
+    def test_ids_from_the_index_are_checked(self):  # review M1: a hand-edited id must not reach the filesystem
+        kb.save(self.r, [{"id": "../../evil", "type": "file", "title": "x", "source": "files/x.md", "status": "ready"}])
+        with self.assertRaises(ValueError):
+            kb.remove(self.r, "../../evil")
+        self.assertFalse((self.tmp / "evil").exists())
+
+    def test_digest_event_only_points_inside(self):  # review I2: a hand-edited index must not send Claude elsewhere
+        outside = self.tmp / "secret.txt"
+        outside.write_text("secret", encoding="utf-8")
+        elsewhere = self.tmp / "other" / "decks" / "x"
+        elsewhere.mkdir(parents=True)
+        (elsewhere / "deck.html").write_text("x", encoding="utf-8")
+        for item in ({"id": "k-aaaaaa", "type": "file", "title": "t", "source": str(outside)},
+                     {"id": "k-aaaaaa", "type": "file", "title": "t", "source": "../../secret.txt"},
+                     {"id": "k-aaaaaa", "type": "file", "title": "t", "source": "files/a.md", "text": str(outside)},
+                     {"id": "k-aaaaaa", "type": "ref", "kind": "deck", "title": "t", "source": str(elsewhere)},
+                     {"id": "k-aaaaaa", "type": "web", "title": "t", "source": "file:///C:/secret.txt"},
+                     {"id": "k-aaaaaa", "type": "file", "title": "t"}):
+            with self.assertRaises(ValueError, msg=item):
+                kb.digest_event(self.deck, "project", item)
+
     def test_digest_event_and_card(self):
         item, _ = kb.add_file(self.r, io.BytesIO(PPTX), len(PPTX), "旧稿.pptx", "ref", "deck")
         ev = kb.digest_event(self.deck, "project", item)
@@ -758,6 +827,42 @@ class KbServerTests(ServerCase):
         self.assertIn("kb:k-abc123", server.summary(e))
         for bad in ([5], ["k" * 21], ["k-a"] * 21):
             self.assertEqual(self.req("POST", "/api/event?t=tok", {"type": "intent", "text": "x", "kb": bad})[0], 400)
+
+    def test_a_slow_upload_does_not_block_other_requests(self):  # review I4: the stream is read outside LOCK
+        s = socket.create_connection(("127.0.0.1", self.port))
+        s.sendall(f"POST /api/kb/file?t=tok&scope=project&type=file&name=a.md HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                  f"Content-Length: 100\r\n\r\n# partial".encode())
+        _time.sleep(0.3)
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            c.request("GET", "/api/kb?t=tok", headers={"Host": f"127.0.0.1:{self.port}"})
+            self.assertEqual(c.getresponse().status, 200)
+            c.close()
+        finally:
+            s.close()
+
+    def test_busy_index_is_503_not_a_dropped_connection(self):  # review I1
+        with mock.patch("kb.save", side_effect=PermissionError("busy")):
+            s, b = post_raw(self.port, "/api/kb/add?t=tok", json.dumps({"scope": "project", "type": "web", "url": "https://x.com"}).encode(), "application/json")
+        self.assertEqual(s, 503)
+
+    def test_redigest_refuses_paths_outside_the_kb(self):  # review I2
+        kb.save(self.r, [{"id": "k-aaaaaa", "type": "file", "title": "t", "source": str(self.tmp / "deck" / "deck.html"), "status": "failed"}])
+        s, _ = post_raw(self.port, "/api/kb/redigest?t=tok", json.dumps({"scope": "project", "id": "k-aaaaaa"}).encode(), "application/json")
+        self.assertEqual(s, 400)
+        self.assertFalse(any(e["type"] == "kb" for e in inbox(self.deck)))
+
+    def test_kb_add_cli(self):  # so Claude never edits index.json by hand
+        src = self.tmp / "笔记.md"
+        src.write_text("# 笔记", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            server.main(["--kb-add", str(self.deck), "project", "file", str(src)])
+            server.main(["--kb-add", str(self.deck), "global", "web", "https://example.com"])
+        items = kb.load(self.r)
+        self.assertEqual((items[0]["title"], items[0]["status"]), ("笔记", "pending"))
+        self.assertEqual(kb.load(self.home / ".ppt-maker" / "kb")[0]["source"], "https://example.com")
+        self.assertIn(items[0]["id"], out.getvalue())  # Claude needs the id (and the card path) to digest it
+        self.assertIn("card", out.getvalue())
 
     def test_tail_catches_up_kb_events(self):
         self.up(b"# x", "a.md")

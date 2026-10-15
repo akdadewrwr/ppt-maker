@@ -73,3 +73,4 @@ body { padding-top: 48px; }
 .ppt-kb-acts { margin-top: 4px; } .ppt-kb-acts .ppt-btn { font-size: 12px; padding: 1px 6px; }
 .ppt-kb-card { white-space: pre-wrap; font: 12px/1.5 Consolas, "Microsoft YaHei", monospace; background: #f9fafb; border-radius: 6px; padding: 6px; max-height: 240px; overflow: auto; }
 .ppt-kb-skill { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0; cursor: pointer; }
+.ppt-sketching .ppt-kb { display: none !important; } /* the board needs the whole slide; the panel comes back after */

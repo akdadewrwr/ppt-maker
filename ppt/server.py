@@ -330,6 +330,8 @@ def watch(srv):
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30  # a client that stalls mid-body frees its thread instead of hanging it forever
+
     def log_message(self, *args):
         pass
 
@@ -383,42 +385,48 @@ class Handler(BaseHTTPRequestHandler):
         deck, q = self.server.deck, parse_qs(url.query)
         arg = lambda k: q.get(k, [""])[0]
         try:
-            with LOCK:
-                if url.path == "/api/kb/file":
-                    if self.stream_len > kb.MAX_FILE:
-                        self.discard_stream()
-                        return self.send(413, {"error": "文件超过 50MB"})
-                    scope = arg("scope")
-                    try:  # refuse before taking any bytes, then drain them so the client gets the answer
-                        kb.check_file(arg("name"), arg("type"), arg("kind") or None)
-                        r = kb.root(deck, scope)
-                        kb.load(r)
-                    except (ValueError, kb.BadIndex):
-                        self.discard_stream()
-                        raise
-                    item, created = kb.add_file(r, self.rfile, self.stream_len, arg("name"), arg("type"), arg("kind") or None)
-                    self.stream_len = 0
-                else:
-                    body = self.read_json()
-                    if not isinstance(body, dict):
-                        raise ValueError("bad body")
-                    scope = body.get("scope", "project")
+            if url.path == "/api/kb/file":
+                if self.stream_len > kb.MAX_FILE:
+                    self.discard_stream()
+                    return self.send(413, {"error": "文件超过 50MB"})
+                scope = arg("scope")
+                try:  # refuse before taking any bytes, then drain them so the client gets the answer
+                    kb.check_file(arg("name"), arg("type"), arg("kind") or None)
                     r = kb.root(deck, scope)
-                    if url.path == "/api/kb/add":
-                        item, created = (kb.add_deck(r, kb.project_dir(deck) / "decks" / kb.safe_name(body["deck"])) if body.get("deck")
-                                         else kb.add_url(r, body.get("url", ""), body.get("type"), body.get("kind")))
-                    elif url.path == "/api/kb/remove":
-                        return self.send(200, {"item": kb.remove(r, str(body.get("id")))})
-                    elif url.path == "/api/kb/redigest":
-                        item, created = kb.update(r, str(body.get("id")), status="pending", note=""), True
-                    elif url.path == "/api/kb/skill":
-                        text = str(body.get("text", "")).strip()
-                        if not text or len(text) > MAX_TEXT:
-                            raise ValueError("请描述这个 Skill")
-                        ev = add_event(deck, {"type": "kb", "kind": "skill", "scope": scope, "text": text, "dir": str(kb.skills_root(deck, scope))})
-                        return self.send(200, {"id": ev["id"]})
-                    else:
-                        return self.send(404, {"error": "not found"})
+                    kb.load(r)
+                except (ValueError, kb.BadIndex):
+                    self.discard_stream()
+                    raise
+                # the slow part (network, disk, Office text) runs outside LOCK: saves and polls carry on meanwhile
+                up = kb.receive(r, self.rfile, self.stream_len, arg("name"), arg("type"), arg("kind") or None)
+                self.stream_len = 0
+                with LOCK:
+                    item, created = kb.commit_file(r, up)
+                    if created:
+                        add_event(deck, kb.digest_event(deck, scope, item))
+                return self.send(200, {"item": item, "created": created})
+            with LOCK:
+                body = self.read_json()
+                if not isinstance(body, dict):
+                    raise ValueError("bad body")
+                scope = body.get("scope", "project")
+                r = kb.root(deck, scope)
+                if url.path == "/api/kb/add":
+                    item, created = (kb.add_deck(r, kb.project_dir(deck) / "decks" / kb.safe_name(body["deck"])) if body.get("deck")
+                                     else kb.add_url(r, body.get("url", ""), body.get("type"), body.get("kind")))
+                elif url.path == "/api/kb/remove":
+                    return self.send(200, {"item": kb.remove(r, str(body.get("id")))})
+                elif url.path == "/api/kb/redigest":
+                    kb.digest_event(deck, scope, kb.get(r, str(body.get("id"))))  # refuse first: nothing changes on a bad entry
+                    item, created = kb.update(r, str(body.get("id")), status="pending", note=""), True
+                elif url.path == "/api/kb/skill":
+                    text = str(body.get("text", "")).strip()
+                    if not text or len(text) > MAX_TEXT:
+                        raise ValueError("请描述这个 Skill")
+                    ev = add_event(deck, {"type": "kb", "kind": "skill", "scope": scope, "text": text, "dir": str(kb.skills_root(deck, scope))})
+                    return self.send(200, {"id": ev["id"]})
+                else:
+                    return self.send(404, {"error": "not found"})
                 if created:
                     add_event(deck, kb.digest_event(deck, scope, item))
                 return self.send(200, {"item": item, "created": created})
@@ -426,6 +434,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(409, {"error": str(e)})
         except ValueError as e:
             return self.send(400, {"error": str(e)})
+        except OSError as e:  # index.json busy (Windows) or disk trouble: say so instead of dropping the connection
+            return self.send(503, {"error": f"知识库暂时写不进去：{e}"})
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -576,6 +586,7 @@ def main(argv=None):
     ap.add_argument("--reply", action="store_true", help="write a reply: <deck> <event_id> [text]")
     ap.add_argument("--ack", action="store_true", help="with --reply: mark the event as being processed")
     ap.add_argument("--kb-done", action="store_true", help="mark a kb item digested: <deck> <scope> <id> <title> <summary>")
+    ap.add_argument("--kb-add", action="store_true", help="add to a kb: <deck> <scope> <file|web|ref> <path-or-url> [kind]")
     ap.add_argument("--kb-fail", action="store_true", help="mark a kb item failed: <deck> <scope> <id> <reason>")
     a = ap.parse_args(argv)
     deck = Path(a.deck).resolve()
@@ -583,6 +594,21 @@ def main(argv=None):
         ap.error(f"{deck / 'deck.html'} not found")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if a.kb_add:  # Claude adds things it was given in the terminal through here, never by editing index.json
+        if len(a.rest) < 3:
+            ap.error("--kb-add needs <scope> <file|web|ref> <path-or-url> [kind]")
+        scope, typ, src = a.rest[:3]
+        kind = a.rest[3] if len(a.rest) > 3 else None
+        r = kb.root(deck, scope)
+        if src.startswith(("http://", "https://")):
+            item, created = kb.add_url(r, src, typ, kind)
+        elif typ == "ref" and kind == "deck" and Path(src).is_dir():
+            item, created = kb.add_deck(r, src)
+        else:
+            p = Path(src)
+            with p.open("rb") as f:
+                item, created = kb.add_file(r, f, p.stat().st_size, p.name, typ, kind)
+        return print(json.dumps({"created": created, **kb.digest_event(deck, scope, item)}, ensure_ascii=False))
     if a.kb_done or a.kb_fail:
         if len(a.rest) < (4 if a.kb_done else 3):
             ap.error("--kb-done needs <scope> <id> <title> <summary>; --kb-fail needs <scope> <id> <reason>")

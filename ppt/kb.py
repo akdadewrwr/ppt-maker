@@ -3,29 +3,35 @@
 Project kb: <project>/kb, where project = deck/../.. (decks live in <project>/decks/<name>).
 Global kb: ~/.ppt-maker/kb. Skills are Claude Code's own: <project>/.claude/skills and ~/.claude/skills.
 PPT_PROJECT_DIR / PPT_HOME_DIR override the project directory and the home directory (tests).
-Callers that run inside the server hold its LOCK; the CLI (--kb-done) may race it, which at worst
-loses one of two simultaneous index writes: save() replaces the file atomically, so it never breaks.
+Index writes are read-modify-write inside the server's LOCK; the CLI (--kb-done / --kb-add) runs in its own
+process and can still race it, losing at worst one of two simultaneous writes. save() replaces the file
+atomically (retrying while Windows has it open), so index.json is never left broken.
 """
-import hashlib, json, os, re, secrets, shutil, zipfile
+import hashlib, json, os, re, secrets, shutil, time, zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 MAX_FILE = 50 * 1024 * 1024
+MAX_TEXT_OUT = 2_000_000  # characters of text extracted from one Office file; the rest is cut
 OFFICE = {".docx", ".pptx", ".xlsx"}
 EXTS = OFFICE | {".pdf", ".md", ".txt", ".csv", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
 KINDS = {"visual", "cite", "deck"}
 SCOPES = ("project", "global")
 ID = re.compile(r"k-[0-9a-z]{6}")
+URL = re.compile(r"https?://\S+")
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-EXTRACT_ERRORS = (zipfile.BadZipFile, KeyError, IndexError, ValueError, ET.ParseError)
 
 
 class BadIndex(Exception):
     """index.json exists but cannot be read: report it, never overwrite it."""
+
+
+class _Full(Exception):
+    """Extracted text reached MAX_TEXT_OUT."""
 
 
 def now_iso():
@@ -70,11 +76,19 @@ def save(r, items):
     r.mkdir(parents=True, exist_ok=True)
     tmp = r / f".index.{secrets.token_hex(4)}.tmp"
     tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, r / "index.json")
+    for attempt in range(10):
+        try:
+            os.replace(tmp, r / "index.json")
+            return
+        except PermissionError:  # Windows: another process has index.json open for a moment
+            if attempt == 9:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
 
 
 def _new_id(items):
-    taken = {i.get("id") for i in items}
+    taken = {i.get("id") for i in items if isinstance(i, dict)}
     while True:
         k = "k-" + "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(6))
         if k not in taken:
@@ -99,93 +113,153 @@ def check_file(name, typ, kind):
     _check_type(typ, kind, {"file", "ref"})
 
 
-def _paras(xml, p_tag, t_tag):
-    out = []
-    for p in ET.fromstring(xml).iter(p_tag):
-        t = "".join(x.text or "" for x in p.iter(t_tag))
-        if t.strip():
-            out.append(t)
-    return "\n".join(out)
+def _paras(z, member, p_tag, t_tag, put):
+    """Stream one XML part: each paragraph's text on its own line (bounded memory, stops at the cap)."""
+    first = True
+    with z.open(member) as f:  # closed even when the cap stops us early: an open member keeps the zip file locked
+        for _, el in ET.iterparse(f, events=("end",)):
+            if el.tag == p_tag:
+                t = "".join(x.text or "" for x in el.iter(t_tag))
+                if t.strip():
+                    put(t if first else "\n" + t)
+                    first = False
+                el.clear()
+
+
+def _xlsx(z, names, put):
+    shared = []
+    if "xl/sharedStrings.xml" in names:
+        with z.open("xl/sharedStrings.xml") as f:
+            for _, el in ET.iterparse(f, events=("end",)):
+                if el.tag == S + "si":
+                    shared.append("".join(t.text or "" for t in el.iter(S + "t")))
+                    el.clear()
+    titles = [s.get("name") for s in ET.fromstring(z.read("xl/workbook.xml")).iter(S + "sheet")]
+    num = lambda n: int(re.search(r"(\d+)\.xml$", n).group(1))
+    for i, n in enumerate(sorted((n for n in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n)), key=num)):
+        put(("\n\n" if i else "") + f"## 工作表 {titles[i] if i < len(titles) else i + 1}")
+        with z.open(n) as f:
+            for _, row in ET.iterparse(f, events=("end",)):
+                if row.tag != S + "row":
+                    continue
+                cells = []
+                for c in row.iter(S + "c"):
+                    v = c.find(S + "v")
+                    if c.get("t") == "s" and v is not None:
+                        cells.append(shared[int(v.text)])
+                    elif c.get("t") == "inlineStr":
+                        cells.append("".join(t.text or "" for t in c.iter(S + "t")))
+                    else:
+                        cells.append(v.text if v is not None and v.text else "")
+                put("\n" + "\t".join(cells))
+                row.clear()
 
 
 def extract(path):
-    """Plain text of a .docx / .pptx (by slide) / .xlsx (by sheet)."""
+    """Plain text of a .docx / .pptx (by slide) / .xlsx (by sheet), at most MAX_TEXT_OUT characters."""
     path = Path(path)
-    ext = path.suffix.lower()
+    ext, out, size = path.suffix.lower(), [], [0]
+
+    def put(s):
+        out.append(s)
+        size[0] += len(s)
+        if size[0] > MAX_TEXT_OUT:
+            raise _Full
+
     num = lambda n: int(re.search(r"(\d+)\.xml$", n).group(1))
-    with zipfile.ZipFile(path) as z:
-        names = z.namelist()
-        if ext == ".docx":
-            return _paras(z.read("word/document.xml"), W + "p", W + "t")
-        if ext == ".pptx":
-            slides = sorted((n for n in names if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)), key=num)
-            return "\n\n".join(f"## 第 {i} 页\n{_paras(z.read(n), A + 'p', A + 't')}" for i, n in enumerate(slides, 1))
-        if ext == ".xlsx":
-            shared = []
-            if "xl/sharedStrings.xml" in names:
-                shared = ["".join(t.text or "" for t in si.iter(S + "t")) for si in ET.fromstring(z.read("xl/sharedStrings.xml")).iter(S + "si")]
-            titles = [s.get("name") for s in ET.fromstring(z.read("xl/workbook.xml")).iter(S + "sheet")]
-            out = []
-            for i, n in enumerate(sorted((n for n in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n)), key=num)):
-                rows = []
-                for row in ET.fromstring(z.read(n)).iter(S + "row"):
-                    cells = []
-                    for c in row.iter(S + "c"):
-                        v = c.find(S + "v")
-                        if c.get("t") == "s" and v is not None:
-                            cells.append(shared[int(v.text)])
-                        elif c.get("t") == "inlineStr":
-                            cells.append("".join(t.text or "" for t in c.iter(S + "t")))
-                        else:
-                            cells.append(v.text if v is not None and v.text else "")
-                    rows.append("\t".join(cells))
-                out.append(f"## 工作表 {titles[i] if i < len(titles) else i + 1}\n" + "\n".join(rows))
-            return "\n\n".join(out)
-    raise ValueError(f"not an office file: {ext}")
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            if ext == ".docx":
+                _paras(z, "word/document.xml", W + "p", W + "t", put)
+            elif ext == ".pptx":
+                for i, n in enumerate(sorted((n for n in names if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)), key=num), 1):
+                    put(("\n\n" if i > 1 else "") + f"## 第 {i} 页\n")
+                    _paras(z, n, A + "p", A + "t", put)
+            elif ext == ".xlsx":
+                _xlsx(z, names, put)
+            else:
+                raise ValueError(f"not an office file: {ext}")
+    except _Full:
+        return "".join(out)[:MAX_TEXT_OUT] + "\n（已截断）"
+    return "".join(out)
+
+
+def receive(r, stream, length, name, typ, kind=None):
+    """Stream an upload into a temp file inside the kb and extract its text. Touches no index, so the
+    server runs it outside its LOCK; commit_file() then files it under the lock."""
+    check_file(name, typ, kind)
+    r = Path(r)
+    r.mkdir(parents=True, exist_ok=True)
+    fname = safe_name(name)
+    tmp = r / f".upload.{secrets.token_hex(4)}{Path(fname).suffix}"
+    h, left = hashlib.sha1(), length
+    try:
+        with tmp.open("wb") as f:
+            while left > 0:
+                chunk = stream.read(min(65536, left))
+                if not chunk:
+                    break
+                h.update(chunk)
+                f.write(chunk)
+                left -= len(chunk)
+        if left:
+            raise ValueError("上传不完整")
+        up = {"tmp": tmp, "sha1": h.hexdigest(), "name": fname, "type": typ, "kind": kind, "text": None, "note": None}
+        if tmp.suffix in OFFICE:
+            try:
+                up["text"] = extract(tmp)
+            except Exception as e:  # best effort: a file we cannot read is still kept, with the reason
+                up["note"] = f"文字抽取失败：{e}"
+        return up
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def commit_file(r, up):
+    """Dedupe against the current index, move the upload into files/ (资料) or refs/ (参考), save."""
+    r, made = Path(r), []
+    try:
+        items = load(r)
+        dup = next((i for i in items if isinstance(i, dict) and i.get("sha1") == up["sha1"]), None)
+        if dup:
+            return dup, False
+        item_id = _new_id(items)
+        sub = r / ("files" if up["type"] == "file" else "refs")
+        sub.mkdir(parents=True, exist_ok=True)
+        dest = sub / f"{item_id}-{up['name']}"
+        os.replace(up["tmp"], dest)
+        made.append(dest)
+        item = {"id": item_id, "type": up["type"], **({"kind": up["kind"]} if up["type"] == "ref" else {}),
+                "title": Path(up["name"]).stem, "summary": "", "status": "pending",
+                "source": dest.relative_to(r).as_posix(), "sha1": up["sha1"], "added": now_iso()}
+        if up["text"] is not None:
+            txt = sub / f"{item_id}.txt"
+            txt.write_text(up["text"], encoding="utf-8")
+            made.append(txt)
+            item["text"] = f"{sub.name}/{item_id}.txt"
+        if up["note"]:
+            item["note"] = up["note"]
+        items.append(item)
+        save(r, items)
+        return item, True
+    except BaseException:
+        for p in made:  # never leave a file the index does not know about
+            p.unlink(missing_ok=True)
+        raise
+    finally:
+        up["tmp"].unlink(missing_ok=True)
 
 
 def add_file(r, stream, length, name, typ, kind=None):
-    """Stream an upload into files/ (资料) or refs/ (参考); identical bytes in this kb return the existing item."""
-    check_file(name, typ, kind)
-    r = Path(r)
-    items = load(r)
-    item_id, fname = _new_id(items), safe_name(name)
-    sub = r / ("files" if typ == "file" else "refs")
-    sub.mkdir(parents=True, exist_ok=True)
-    dest = sub / f"{item_id}-{fname}"
-    h, left = hashlib.sha1(), length
-    with dest.open("wb") as f:
-        while left > 0:
-            chunk = stream.read(min(65536, left))
-            if not chunk:
-                break
-            h.update(chunk)
-            f.write(chunk)
-            left -= len(chunk)
-    if left:
-        dest.unlink()
-        raise ValueError("上传不完整")
-    sha = h.hexdigest()
-    dup = next((i for i in items if i.get("sha1") == sha), None)
-    if dup:
-        dest.unlink()
-        return dup, False
-    item = {"id": item_id, "type": typ, **({"kind": kind} if typ == "ref" else {}), "title": Path(fname).stem,
-            "summary": "", "status": "pending", "source": dest.relative_to(r).as_posix(), "sha1": sha, "added": now_iso()}
-    if dest.suffix in OFFICE:
-        try:
-            (sub / f"{item_id}.txt").write_text(extract(dest), encoding="utf-8")
-            item["text"] = f"{sub.name}/{item_id}.txt"
-        except EXTRACT_ERRORS as e:
-            item["note"] = f"文字抽取失败：{e}"
-    items.append(item)
-    save(r, items)
-    return item, True
+    """receive + commit_file in one go (tests, the CLI)."""
+    return commit_file(r, receive(r, stream, length, name, typ, kind))
 
 
 def _add_simple(r, fields):
     items = load(r)
-    dup = next((i for i in items if i.get("source") == fields["source"] and i.get("type") == fields["type"]
+    dup = next((i for i in items if isinstance(i, dict) and i.get("source") == fields["source"] and i.get("type") == fields["type"]
                 and i.get("kind") == fields.get("kind")), None)
     if dup:
         return dup, False
@@ -214,10 +288,16 @@ def add_deck(r, deck_dir):
 
 
 def _find(items, item_id):
-    item = next((i for i in items if i.get("id") == item_id), None)
+    if not isinstance(item_id, str) or not ID.fullmatch(item_id):  # ids reach the filesystem (.trash/<id>)
+        raise ValueError(f"bad id: {item_id}")
+    item = next((i for i in items if isinstance(i, dict) and i.get("id") == item_id), None)
     if not item:
         raise ValueError(f"没有这条资料：{item_id}")
     return item
+
+
+def get(r, item_id):
+    return _find(load(r), item_id)
 
 
 def update(r, item_id, **fields):
@@ -230,7 +310,7 @@ def update(r, item_id, **fields):
 
 def _inside(r, rel):
     """Path of a kb-relative file, or None when it is a URL, absolute, or points outside the kb."""
-    if not rel or re.match(r"https?://", rel) or Path(rel).is_absolute():
+    if not isinstance(rel, str) or not rel or URL.match(rel) or Path(rel).is_absolute():
         return None
     p = (Path(r) / rel).resolve()
     return p if p.is_relative_to(Path(r).resolve()) and p.is_file() else None
@@ -308,15 +388,33 @@ def card(deck, scope, item_id):
     return (root(deck, scope) / "cards" / f"{item_id}.md").read_text(encoding="utf-8")
 
 
+def _source(deck, r, item):
+    """Where Claude may read an item: a file inside this kb, an http(s) URL (web / citation),
+    or a deck folder of this project. A hand-edited index pointing anywhere else is refused."""
+    src, kind = item.get("source"), item.get("kind")
+    if not isinstance(src, str) or not src:
+        raise ValueError("条目缺少原件")
+    if URL.fullmatch(src) and (item.get("type") == "web" or kind == "cite"):
+        return src
+    if kind == "deck" and Path(src).is_absolute():
+        d = Path(src).resolve()
+        if d.is_relative_to((project_dir(deck) / "decks").resolve()) and (d / "deck.html").is_file():
+            return str(d)
+        raise ValueError("旧 deck 不在本项目的 decks 里")
+    if _inside(r, src) is None:
+        raise ValueError("原件不在知识库里")
+    return str(r / src)
+
+
 def digest_event(deck, scope, item):
     """The event that asks Claude to read an item and write its card (absolute paths: any cwd works)."""
     r = root(deck, scope)
-    src = item["source"]
-    ev = {"type": "kb", "kind": "digest", "scope": scope, "kb_id": item["id"], "text": f"消化《{item['title']}》",
-          "source": src if re.match(r"https?://", src) or Path(src).is_absolute() else str(r / src),
-          "card": str(r / "cards" / f"{item['id']}.md")}
+    ev = {"type": "kb", "kind": "digest", "scope": scope, "kb_id": item.get("id"), "text": f"消化《{item.get('title', '')}》",
+          "source": _source(deck, r, item), "card": str(r / "cards" / f"{item.get('id')}.md")}
     if item.get("text"):
+        if _inside(r, item["text"]) is None:
+            raise ValueError("抽取的文字不在知识库里")
         ev["extracted"] = str(r / item["text"])
     if item.get("type") == "web":
-        ev["snapshot"] = str(r / "web" / f"{item['id']}.md")
+        ev["snapshot"] = str(r / "web" / f"{item.get('id')}.md")
     return ev

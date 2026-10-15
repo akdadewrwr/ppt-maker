@@ -595,6 +595,19 @@ try {
   await sleep(3000);
   check('B a broken global index is reported and left alone', (await kbText()).includes('无法读取') && fs.readFileSync(path.join(HOMEDIR, '.ppt-maker', 'kb', 'index.json'), 'utf8') === '{oops');
   b9 = await byTitle('关闭知识库'); await click(b9.x, b9.y); await sleep(300);
+  // ---- kb review fixes ----
+  await open(url); await ev(`scrollTo(0, 0)`); await sleep(300);
+  const cov = await rectOf('#b-cover-title'); await click(cov.x, cov.t + 10); await sleep(300); // selects whatever is on top there
+  b9 = await byTitle('打开知识库'); await click(b9.x, b9.y); await sleep(1000);
+  const deckB = deckHtml();
+  b9 = await byTitle('参考'); await click(b9.x, b9.y); await sleep(500);
+  await key('Delete', 'Delete', 46); await sleep(2000);
+  check('BR Delete with focus on a panel button leaves the slide alone', deckHtml() === deckB);
+  b9 = await byTitle('在当前页上画草图'); await click(b9.x, b9.y); await sleep(500);
+  check('BR the knowledge base panel steps aside while sketching', (await ev(`getComputedStyle(document.querySelector('.ppt-kb')).display`)) === 'none');
+  await key('Escape', 'Escape', 27); await sleep(500);
+  check('BR and comes back afterwards', (await ev(`getComputedStyle(document.querySelector('.ppt-kb')).display`)) !== 'none');
+  b9 = await byTitle('关闭知识库'); await click(b9.x, b9.y); await sleep(300);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

@@ -13,7 +13,7 @@ argument-hint: <deck 名字或主题>
 
 ## 处理事件
 摘要格式：`e17 intent slide:s-intro [b-right,b-r1] 文字…`。完整内容在 `decks/<名字>/.ppt/inbox.jsonl`，按 id 查。
-- 处理 intent / answer / lint 之前先标记：`python ppt/server.py --reply "decks/<名字>" <id> --ack`
+- 处理 intent / answer / lint / kb 之前先标记：`python ppt/server.py --reply "decks/<名字>" <id> --ack`
 - **intent**：有 `shot` 就用 Read 看截图（路径相对 deck 目录）。先重新读 deck.html，再只改 `blocks` 列出的块或对象（先列块，第一个是最内层的块；`o-` 开头的浮动对象排在块后面）；`blocks` 为空时按 `cells`（列范围/行范围）在该区域新建块。不动无关块。
 - **intent 且 `kind` 为 `draw-icon`**：用户想要一个图标库里没有的图标，`text` 是描述。在 `slide_id` 页按 `rect` 的位置和大小新建一个图标对象（格式见规则 10），自己画 24×24 的线条图：只用 `path / circle / rect / line / polyline`，不写颜色和线宽（它们由对象的 `color`、`stroke-width` 控制），风格与 Lucide 一致（圆角端点、2px 线、简洁）。新 id 以 `o-` 开头。
 - **intent 且 `kind` 为 `sketch`**：用户画了草图。用 Read 看 `shot`（整页截图，草图画在上面）：线条和框表示布局意图，箭头表示关系或流程；`notes` 是用户打的标注，以它的原文为准，不要从图里认字。不要把手绘线条原样搬进 deck，要做成正式的块、表格、形状、箭头或图标，并遵守格式规则。已有页只改 `blocks` 列出的块和对象，以及草图范围（`rect`）内需要新建的内容，除非用户的话另有说明；空白页（没有块）按草图生成整页。看不懂就在回执里问一个具体问题。
@@ -23,7 +23,17 @@ argument-hint: <deck 名字或主题>
 - **edit**：用户在页面上直接改了内容（`label` 说明改了什么，如"移动 b-left""样式 background=#ef4444 b-title"）。无需动作、无需回执；下次改文件前重新读。
 - **edit 且 `op` 为 `undo` / `redo`**：用户撤销或重做了一步（`label` 如"撤销了 Claude 处理 #e17"）。**被撤销的是你的修改时，不要自动改回去**；同一意图再次出现时换一种做法，必要时先问用户。
 - 处理完必须回执（一句话说明改了什么）：`python ppt/server.py --reply "decks/<名字>" <id> "<说明>"`。没理解就在回执里问一个具体问题，不要猜着大改。
+- **kb 事件 `kind:digest`**：消化一条资料。读 `source`（PDF 用 Read 按页读；图片直接看；有 `extracted` 时读这份抽出的文字；网址用 WebFetch 抓取，把标题、网址和正文写进 `snapshot`；旧 deck 的 `source` 是目录，读其中的 deck.html）。把卡片写到 `card`：frontmatter `id / type / title / source`，正文 `## 摘要`、`## 要点`、`## 可引用`（每条带位置，如 `- [p.12] 营收 12.3 亿`，网页写段落或小标题）；视觉参考和旧 deck 另写 `## 风格`（版式、配色、字体、结构）。然后 `python ppt/server.py --kb-done "decks/<名字>" <scope> <kb_id> "<标题>" "<一句话摘要>"` 并回执。读不了（加密、打不开、内容为空）就 `--kb-fail "decks/<名字>" <scope> <kb_id> "<原因>"` 并回执说明。
+- **kb 事件 `kind:skill`**：按 Claude Code Skills 的格式在 `dir/<英文短名>/SKILL.md` 写一个 skill：frontmatter `name`（与目录名相同）、`description`（一句话说明何时使用），正文把用户描述的规则写清楚、可执行。回执里告诉用户名字，并提醒在知识库面板的 Skills 页勾选。
+- **intent 带 `kb`**：用户指定了资料（id 列表），优先读这些卡片，按用户的话决定改哪里。
 - 用户在终端直接说的话照常执行，规则相同。
+
+## 知识库
+- 位置：项目知识库 `<项目>/kb/`（项目 = deck 目录往上两层），全局 `~/.ppt-maker/kb/`；各含 `index.json`（总目录）、`cards/`（卡片）、`files/`、`web/`、`refs/`。Skills 在 `<项目>/.claude/skills/` 和 `~/.claude/skills/`；本 deck 启用的列在 `decks/<名字>/kb.json` 的 `skills`。
+- 新建 deck、处理每个 intent / answer 之前：读两个 `index.json`（不存在就是空）和本 deck 的 `kb.json`；读启用的 `SKILL.md` 并严格遵守；按意图读相关卡片；用到精确数字或原文时回到原件（`source` / `extracted` / `web/<id>.md`）核对。
+- 用了知识库里的事实，就在该块底部加一行出处：`<p style="font-size:12px;margin:4px 0 0;color:var(--muted)">来源：《标题》p.12</p>`；用户要求时做一页"参考资料"。知识库里没有的事实不要编，在回执里说明缺什么。
+- 新建 deck，或用户要求参考某种风格时，按视觉参考 / 旧 deck 卡片的 `## 风格` 调整 `#theme` 和版式；复用旧 deck 的页面时复制过来并换成新 id。
+- 用户在终端说"把 X 加进知识库"：把原件放进 `files/`（或 `refs/`），在 `index.json` 加一条（字段同面板添加的条目，`status: "pending"`），然后照 digest 的做法写卡片、`--kb-done`。
 
 ## deck.html 格式规则
 1. 每页 `<section class="slide" id="s-…">`，每块 `<div class="block" id="b-…">`，id 全文件唯一。

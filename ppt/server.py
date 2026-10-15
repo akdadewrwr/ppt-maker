@@ -20,10 +20,11 @@ DRAIN_MAX = 256 * 1024 * 1024  # read off (never store) an upload we refuse, up 
 MAX_TEXT = 4000
 MAX_NOTES = 50
 MAX_NOTE = 200
+MAX_ITEMS = 30  # intents in one batch
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
 REPLY_TYPES = EVENT_TYPES | {"kb"}  # kb events are written by the server, not posted by the page
 FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
-               "blocks": list, "text": str, "issues": list, "quote": dict, "notes": list, "kb": list}
+               "blocks": list, "text": str, "issues": list, "quote": dict, "notes": list, "kb": list, "items": list}
 HEARTBEAT_SECS = 10
 ONLINE_SECS = 30
 HISTORY_MAX = 200
@@ -113,10 +114,29 @@ def save_asset(deck, data):
 
 
 def clean_event(body):
-    """Whitelist fields from a page-posted event; returns (event, png_bytes|None)."""
+    """Whitelist fields from a page-posted event; returns (event, png_bytes|None).
+    A batch keeps its items, each checked like an intent; their screenshots ride along as "_shot" for add_event."""
     if not isinstance(body, dict) or body.get("type") not in EVENT_TYPES:
         raise ValueError("bad type")
-    ev = {k: body[k] for k in FIELD_TYPES if k in body and body[k] is not None}
+    ev, shot = _fields(body)
+    items = body.get("items")
+    if ev.get("kind") == "batch":
+        if not isinstance(items, list) or not 0 < len(items) <= MAX_ITEMS:
+            raise ValueError("bad items")
+        ev["items"] = []
+        for it in items:
+            if not isinstance(it, dict) or "type" in it or "items" in it or it.get("kind") not in (None, "sketch"):
+                raise ValueError("bad item")
+            fields, item_shot = _fields(it)
+            ev["items"].append({**fields, **({"_shot": item_shot} if item_shot else {})})
+    elif items is not None:
+        raise ValueError("items only belong to a batch")
+    return ev, shot
+
+
+def _fields(body):
+    """One event's (or batch item's) whitelisted fields; returns (fields, png_bytes|None)."""
+    ev = {k: body[k] for k in FIELD_TYPES if k in body and body[k] is not None and k != "items"}
     bad = [k for k, t in FIELD_TYPES.items() if k in ev and not isinstance(ev[k], t)]
     if bad or not all(isinstance(b, str) for b in ev.get("blocks", [])):
         raise ValueError(f"bad field types: {bad or ['blocks']}")
@@ -150,6 +170,13 @@ def add_event(deck, ev, shot=None):
     inbox = rt / "inbox.jsonl"
     n = len(inbox.read_text(encoding="utf-8").splitlines()) if inbox.exists() else 0  # raw lines: ids never reused
     eid = f"e{n + 1}"
+    if ev.get("items"):
+        ev = {**ev, "items": [dict(it) for it in ev["items"]]}
+        for i, it in enumerate(ev["items"], 1):
+            png = it.pop("_shot", None)
+            if png:
+                (rt / "shots" / f"{eid}-{i}.png").write_bytes(png)
+                it["shot"] = f".ppt/shots/{eid}-{i}.png"
     if shot:
         (rt / "shots" / f"{eid}.png").write_bytes(shot)
         ev = {**ev, "shot": f".ppt/shots/{eid}.png"}
@@ -174,10 +201,18 @@ def state(deck):
     st = statuses(deck)
     replies = {r.get("re"): r.get("text", "") for r in read_jsonl(rt / "outbox.jsonl") if not r.get("ack")}
     hb = rt / "heartbeat"
-    events = [{"id": e["id"], "type": e["type"], "re": e.get("re"), "slide_id": e.get("slide_id"),
-               "rect": e.get("rect"), "text": e.get("text", ""),
-               "status": st.get(e["id"], "queued"), "reply": replies.get(e["id"])}
-              for e in read_jsonl(rt / "inbox.jsonl") if e.get("type") in ("intent", "answer")]
+    events, batches = [], set()
+    for e in read_jsonl(rt / "inbox.jsonl"):
+        t, status, reply = e.get("type"), st.get(e.get("id"), "queued"), replies.get(e.get("id"))
+        if t == "intent" and e.get("kind") == "batch":  # one mark per item; the reply sits by the first
+            batches.add(e["id"])
+            for i, it in enumerate(e.get("items") or [], 1):
+                events.append({"id": f"{e['id']}-{i}", "type": "intent", "parent": e["id"], "re": None, "slide_id": it.get("slide_id"),
+                               "rect": it.get("rect"), "text": it.get("text", ""), "status": status, "reply": reply if i == 1 else None})
+        elif t in ("intent", "answer"):
+            re_ = e.get("re")
+            events.append({"id": e["id"], "type": t, "re": f"{re_}-1" if re_ in batches else re_, "slide_id": e.get("slide_id"),
+                           "rect": e.get("rect"), "text": e.get("text", ""), "status": status, "reply": reply})
     return {"version": deck_version(deck),
             "online": hb.exists() and time.time() - hb.stat().st_mtime < ONLINE_SECS,
             "events": events}
@@ -191,7 +226,8 @@ def summary(e):
     notes = " notes:" + "".join(f"「{n[:10]}」" for n in e["notes"][:3]) if e.get("notes") else ""
     kind = f" kind:{e['kind']}" if e.get("kind") else ""
     kbs = f" kb:{','.join(e['kb'])}" if e.get("kb") else ""
-    line = f"{e['id']} {e['type']}{kind}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote}{notes}{kbs} {text[:60]}"
+    items = f" items:{len(e['items'])}" if e.get("items") else ""
+    line = f"{e['id']} {e['type']}{kind}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote}{notes}{kbs}{items} {text[:60]}"
     return " ".join(line.split())
 
 

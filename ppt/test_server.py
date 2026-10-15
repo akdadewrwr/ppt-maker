@@ -875,6 +875,48 @@ class KbServerTests(ServerCase):
         self.assertTrue(any(" kb kind:digest " in l for l in lines), lines)
 
 
+class BatchTests(ServerCase):
+    def item(self, text, slide_id="s-cover", **kw):
+        return {"slide": 1, "slide_id": slide_id, "rect": {"x": 0, "y": 0, "w": 100, "h": 50}, "cells": "1-2/1-1", "blocks": ["b-cover-title"], "text": text, **kw}
+
+    def post(self, ev):
+        return self.req("POST", "/api/event?t=tok", ev)[0]
+
+    def test_batch_items_saved_with_their_shots(self):
+        self.assertEqual(self.post({"type": "intent", "kind": "batch", "text": "整页改成对比结构",
+                                    "items": [self.item("标题改短", shot=PNG), self.item("画一个流程", kind="sketch", notes=["开始"])]}), 200)
+        e = inbox(self.deck)[-1]
+        self.assertEqual([i["text"] for i in e["items"]], ["标题改短", "画一个流程"])
+        self.assertEqual(e["items"][0]["shot"], f".ppt/shots/{e['id']}-1.png")
+        self.assertTrue((self.deck / e["items"][0]["shot"]).read_bytes().startswith(b"\x89PNG"))
+        self.assertNotIn("shot", e["items"][1])
+        self.assertIn(" kind:batch ", server.summary(e))
+        self.assertIn(" items:2 ", server.summary(e))
+
+    def test_batch_validation(self):
+        ok = self.item("x")
+        for bad in ({"type": "intent", "kind": "batch", "text": "x"},
+                    {"type": "intent", "kind": "batch", "items": "x"},
+                    {"type": "intent", "kind": "batch", "items": []},
+                    {"type": "intent", "kind": "batch", "items": [ok] * 31},
+                    {"type": "intent", "kind": "batch", "items": [{**ok, "type": "intent"}]},
+                    {"type": "intent", "kind": "batch", "items": [{**ok, "kind": "draw-icon"}]},
+                    {"type": "intent", "kind": "batch", "items": [{**ok, "blocks": "x"}]},
+                    {"type": "intent", "kind": "batch", "items": [{**ok, "items": [ok]}]},
+                    {"type": "intent", "text": "x", "items": [ok]}):
+            self.assertEqual(self.post(bad), 400, bad)
+
+    def test_state_expands_batches(self):
+        self.post({"type": "intent", "kind": "batch", "items": [self.item("一"), self.item("二", slide_id="s-2")]})
+        self.post({"type": "answer", "re": "e1", "text": "第二条再大一点"})
+        server.reply(self.deck, "e1", "两处都改好了")
+        ev = {e["id"]: e for e in json.loads(self.req("GET", "/api/state?t=tok")[1])["events"]}
+        self.assertEqual((ev["e1-1"]["parent"], ev["e1-1"]["reply"], ev["e1-1"]["status"]), ("e1", "两处都改好了", "done"))
+        self.assertEqual((ev["e1-2"]["slide_id"], ev["e1-2"]["reply"]), ("s-2", None))
+        self.assertNotIn("e1", ev)
+        self.assertEqual(ev["e2"]["re"], "e1-1")
+
+
 class CliTests(ServerCase):
     def test_reply_drives_status(self):
         server.reply(self.deck, "e1", ack=True)

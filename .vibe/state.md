@@ -1,15 +1,17 @@
 ## 上一轮完成
-- 告诉用户怎样在另一个 session 里试用草图功能；本会话没有改代码。工作区仍在 feat/sketch（326b7de）。
+- 新建全局命令入口 C:/Users/user/.claude/commands/ppt.md（不在仓库里），在任何目录下都能用 /ppt。
+- 另一个 session 找不到 /ppt 的原因：它不是在 ppt-maker 目录下启动的（项目命令只从启动目录的 .claude/commands 加载）。
 
 ## 关键结论
-- 另一个 session 和本会话共用同一个工作目录和分支：用户试用期间，本会话不改代码，也不切换分支。
-- 目前没有 ppt 服务在运行；试用 session 用 /ppt 启动服务和监听。
+- 全局入口只做转发：读取仓库里的 .claude/commands/ppt.md 并照做，路径一律用 PPT_HOME 绝对路径；deck 统一放在 PPT_HOME/decks/。规则只维护仓库里这一份。
+- 入口里写死了本机路径。开源时应改成插件或安装脚本，这是以后的事。
+- 在 ppt-maker 目录下，项目级和用户级的 /ppt 同名，两者都能用。
 
 ## 改动文件
-- 只有 .vibe/state.md
+- C:/Users/user/.claude/commands/ppt.md（新，仓库外）；.vibe/state.md
 
 ## 当前 blocker
-- 等用户试用的反馈；之后决定 feat/sketch 是否合并到 main。
+- 等用户在另一个 session 里试用草图功能的反馈；feat/sketch 尚未合并。
 
 ## 下一步
 - 根据试用反馈修改，或者合并后进入知识库子项目。

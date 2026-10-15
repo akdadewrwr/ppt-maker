@@ -39,3 +39,5 @@ body { padding-top: 48px; }
 .ppt-bubble p { margin: 0 0 6px; white-space: pre-wrap; } .ppt-bubble .who { color: #6b7280; }
 .ppt-bubble .x { float: right; border: 0; background: none; cursor: pointer; font-size: 16px; line-height: 1; }
 .ppt-toast { position: fixed; left: 50%; top: 48px; transform: translateX(-50%); z-index: 2147483001; }
+.ppt-rot { left: 50%; top: -28px; border-radius: 50%; cursor: grab; }
+.ppt-end { border-radius: 50%; cursor: move; }

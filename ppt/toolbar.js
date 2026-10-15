@@ -1,9 +1,10 @@
-// ppt-maker toolbars: top bar, floating bar, colour popover, selection frame + handles.
+// ppt-maker toolbars: top bar, floating bars, colour popover, selection frame + handles.
 // UI only: every action goes back to editor.js through the callbacks given to create().
 (() => {
   const COMMON = ['#000000', '#ffffff', '#6b7280', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#2563eb', '#8b5cf6'];
   const SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 56, 72];
   const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+  const OPACITY = [100, 80, 60, 40, 20];
 
   function searchIcons(icons, zh, q, limit = 120) { // zh hits first, then names/tags containing the query
     q = q.trim().toLowerCase();
@@ -14,6 +15,7 @@
   }
 
   function create(ui, cb) {
+    const G = window.PPTGeom;
     const el = (tag, cls, parent, text) => {
       const e = document.createElement(tag);
       if (cls) e.className = cls;
@@ -51,11 +53,10 @@
 
     // ---- selection frame + handles ----
     const frame = el('div', 'ppt-abs ppt-frame', ui); frame.hidden = true;
-    const handles = HANDLES.map((h) => {
-      const d = el('div', 'ppt-handle', frame); d.dataset.handle = h;
-      d.addEventListener('mousedown', (e) => { if (e.button === 0) { e.preventDefault(); cb.startResize(h, e); } });
-      return d;
-    });
+    const grab = (d, h) => d.addEventListener('mousedown', (e) => { if (e.button === 0) { e.preventDefault(); cb.startResize(h, e); } });
+    const handles = HANDLES.map((h) => { const d = el('div', 'ppt-handle', frame); d.dataset.handle = h; grab(d, h); return d; });
+    const rot = el('div', 'ppt-handle ppt-rot', frame); rot.dataset.handle = 'rot'; rot.title = '旋转（Shift：每 15°）'; grab(rot, 'rot');
+    const ends = ['p1', 'p2'].map((h) => { const d = el('div', 'ppt-abs ppt-handle ppt-end', ui); d.dataset.handle = h; d.hidden = true; grab(d, h); return d; });
 
     // ---- colour popover ----
     const pop = el('div', 'ppt-abs ppt-colors', ui); pop.hidden = true;
@@ -75,41 +76,88 @@
       const ar = anchor.getBoundingClientRect();
       cb.place(pop, { left: Math.max(8, Math.min(ar.left, innerWidth - 260)), top: ar.bottom + 4 });
     }
-    document.addEventListener('mousedown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.ppt-colorbtn')) pop.hidden = true; }, true);
+    const popups = [pop];
+    document.addEventListener('mousedown', (e) => {
+      for (const p of popups) if (!p.hidden && !p.contains(e.target) && !e.target.closest('.ppt-colorbtn')) p.hidden = true;
+    }, true);
     const colorBtn = (parent, label, title, onPick) => { const b = btn(parent, label, title, () => openColors(b, onPick), 'ppt-colorbtn'); return b; };
 
-    // ---- floating bar (blocks) ----
-    const bar = el('div', 'ppt-abs ppt-bar', ui); bar.hidden = true;
-    colorBtn(bar, 'A', '字色', (c) => cb.textStyle({ color: c }));
-    pick(bar, '字号', SIZES, (v) => `${v}`, (v) => cb.textStyle({ 'font-size': `${v}px` }));
-    btn(bar, 'B', '加粗', () => cb.toggle('bold'), 'ppt-b');
-    btn(bar, 'I', '斜体', () => cb.toggle('italic'), 'ppt-i');
-    btn(bar, 'U', '下划线', () => cb.toggle('underline'), 'ppt-u');
-    pick(bar, '对齐', ['left', 'center', 'right'], (v) => ({ left: '左对齐', center: '居中', right: '右对齐' })[v], (v) => cb.blockStyle({ 'text-align': v }));
-    sep(bar);
-    colorBtn(bar, '■', '背景色', (c) => cb.blockStyle({ background: c }));
-    colorBtn(bar, '□', '边框颜色', (c) => cb.border({ color: c }));
-    pick(bar, '边框粗细', [0, 1, 2, 4, 8], (v) => (+v ? `${v}px` : '无边框'), (v) => cb.border({ width: +v }));
-    pick(bar, '圆角', [0, 4, 8, 16, 24], (v) => `${v}px`, (v) => cb.blockStyle({ 'border-radius': +v ? `${v}px` : null }));
-    btn(bar, '▣', '阴影', () => cb.toggleShadow());
-    sep(bar);
-    btn(bar, '🗑', '删除', () => cb.remove());
-    btn(bar, '💬 问 Claude', '问 Claude', () => cb.ask(), 'ppt-ask');
+    // ---- floating bars: one per kind of selection ----
+    const bars = {};
+    const mkBar = (k) => { const b = el('div', 'ppt-abs ppt-bar', ui); b.hidden = true; return (bars[k] = b); };
+    const tail = (b, z) => {
+      sep(b);
+      if (z) { btn(b, '⤒', '置顶', () => cb.z('top')); btn(b, '⤓', '置底', () => cb.z('bottom')); sep(b); }
+      btn(b, '🗑', '删除', () => cb.remove());
+      btn(b, '💬 问 Claude', '问 Claude', () => cb.ask(), 'ppt-ask');
+    };
+    const borders = (b) => {
+      colorBtn(b, '□', '边框颜色', (c) => cb.border({ color: c }));
+      pick(b, '边框粗细', [0, 1, 2, 4, 8], (v) => (+v ? `${v}px` : '无边框'), (v) => cb.border({ width: +v }));
+    };
+    const opacity = (b) => pick(b, '透明度', OPACITY, (v) => `${v}%`, (v) => cb.blockStyle({ opacity: +v === 100 ? null : String(v / 100) }));
 
-    let target = null;
+    let b = mkBar('block');
+    colorBtn(b, 'A', '字色', (c) => cb.textStyle({ color: c }));
+    pick(b, '字号', SIZES, (v) => `${v}`, (v) => cb.textStyle({ 'font-size': `${v}px` }));
+    btn(b, 'B', '加粗', () => cb.toggle('bold'), 'ppt-b');
+    btn(b, 'I', '斜体', () => cb.toggle('italic'), 'ppt-i');
+    btn(b, 'U', '下划线', () => cb.toggle('underline'), 'ppt-u');
+    pick(b, '对齐', ['left', 'center', 'right'], (v) => ({ left: '左对齐', center: '居中', right: '右对齐' })[v], (v) => cb.blockStyle({ 'text-align': v }));
+    sep(b);
+    colorBtn(b, '■', '背景色', (c) => cb.blockStyle({ background: c }));
+    borders(b);
+    pick(b, '圆角', [0, 4, 8, 16, 24], (v) => `${v}px`, (v) => cb.blockStyle({ 'border-radius': +v ? `${v}px` : null }));
+    btn(b, '▣', '阴影', () => cb.toggleShadow());
+    tail(b, false);
+    for (const k of ['shape', 'arrow']) {
+      b = mkBar(k);
+      if (k === 'shape') colorBtn(b, '■', '填充', (c) => cb.blockStyle({ fill: c || 'none' }));
+      colorBtn(b, '／', '线条色', (c) => cb.blockStyle({ stroke: c || 'none' }));
+      pick(b, '线宽', [1, 2, 3, 4, 6, 8], (v) => `${v}px`, (v) => cb.blockStyle({ 'stroke-width': v }));
+      opacity(b);
+      tail(b, true);
+    }
+    b = mkBar('icon');
+    colorBtn(b, 'A', '颜色', (c) => cb.blockStyle({ color: c }));
+    pick(b, '线宽', [1, 1.5, 2, 2.5, 3], (v) => `${v}`, (v) => cb.blockStyle({ 'stroke-width': v }));
+    tail(b, true);
+    b = mkBar('image');
+    pick(b, '圆角', [0, 8, 16, 24, '50%'], (v) => (v === '50%' ? '圆形' : `${v}px`), (v) => cb.blockStyle({ 'border-radius': v === '50%' ? v : +v ? `${v}px` : null }));
+    borders(b);
+    opacity(b);
+    tail(b, true);
+
+    let target = null, kind = null;
     function reposition() {
-      if (!target || !target.isConnected) { frame.hidden = bar.hidden = true; return; }
+      const bar = bars[kind];
+      if (!target || !target.isConnected || !bar) {
+        frame.hidden = true; ends.forEach((d) => { d.hidden = true; }); Object.values(bars).forEach((x) => { x.hidden = true; });
+        return;
+      }
       const r = target.getBoundingClientRect();
-      cb.place(frame, { left: r.left, top: r.top, width: r.width, height: r.height });
+      if (kind === 'block') {
+        cb.place(frame, { left: r.left, top: r.top, width: r.width, height: r.height }); frame.style.transform = '';
+      } else { // objects: the frame follows the unrotated box and turns with it
+        const sr = target.closest('section.slide').getBoundingClientRect(), g = G.geomOf(target), e = G.arrowEnds(target);
+        cb.place(frame, G.slideToClient(sr, g)); frame.style.transform = g.rot ? `rotate(${g.rot}deg)` : '';
+        if (e) ends.forEach((d, i) => { const p = G.slideToClient(sr, { x: i ? e.x2 : e.x1, y: i ? e.y2 : e.y1, w: 0, h: 0 }); cb.place(d, { left: p.left, top: p.top }); });
+      }
       const bh = bar.offsetHeight || 36, bw = bar.offsetWidth || 560, topBar = top.offsetHeight + 8;
+      const gap = rot.hidden ? 8 : 40; // keep the rotate handle above the frame clear of the bar
       cb.place(bar, { left: Math.max(8, Math.min(r.left, innerWidth - bw - 8)),
-        top: r.top - bh - 8 >= topBar ? r.top - bh - 8 : Math.min(r.bottom + 8, innerHeight - bh - 8) });
+        top: r.top - bh - gap >= topBar ? r.top - bh - gap : Math.min(r.bottom + gap, innerHeight - bh - 8) });
     }
     function select(t, opts = {}) {
       target = t;
-      frame.hidden = bar.hidden = !t;
+      kind = !t ? null : !t.classList.contains('obj') ? 'block' : bars[t.dataset.kind] ? t.dataset.kind : 'shape';
+      Object.entries(bars).forEach(([k, x]) => { x.hidden = k !== kind; });
+      frame.hidden = !t;
+      const arrow = !!t && kind !== 'block' && !!G.arrowEnds(t);
+      ends.forEach((d) => { d.hidden = !arrow; });
       if (!t) { pop.hidden = true; return; }
-      handles.forEach((h) => { h.hidden = !opts.resizable || !!opts.editing; });
+      handles.forEach((h) => { h.hidden = !opts.resizable || !!opts.editing || arrow; });
+      rot.hidden = kind === 'block' || arrow || !!opts.editing;
       reposition();
     }
     return {

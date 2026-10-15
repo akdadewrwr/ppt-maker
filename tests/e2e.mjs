@@ -53,8 +53,8 @@ ws.addEventListener('message', (m) => {
 });
 const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
 const ev = async (expr) => { const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); return r.result?.result?.value; };
-const mouse = (type, x, y, clickCount = 1) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount });
-async function drag(x0, y0, x1, y1) { await mouse('mousePressed', x0, y0); for (let i = 1; i <= 5; i++) await mouse('mouseMoved', x0 + (x1 - x0) * i / 5, y0 + (y1 - y0) * i / 5); await mouse('mouseReleased', x1, y1); }
+const mouse = (type, x, y, clickCount = 1, modifiers = 0) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount, modifiers });
+async function drag(x0, y0, x1, y1, modifiers = 0) { await mouse('mousePressed', x0, y0, 1, modifiers); for (let i = 1; i <= 5; i++) await mouse('mouseMoved', x0 + (x1 - x0) * i / 5, y0 + (y1 - y0) * i / 5, 1, modifiers); await mouse('mouseReleased', x1, y1, 1, modifiers); }
 async function click(x, y) { await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); }
 async function dblclick(x, y) { await click(x, y); await mouse('mousePressed', x, y, 2); await mouse('mouseReleased', x, y, 2); }
 const type = (t) => send('Input.insertText', { text: t });
@@ -297,8 +297,70 @@ try {
   const ask = inbox().at(-1);
   check('F ask Claude sends selection', ask?.type === 'intent' && ask.blocks?.[0] === 'b-p2-title' && !!ask.shot, JSON.stringify({ ...ask, shot: !!ask?.shot }));
   check('F user styling raises no lint for Claude', inbox().filter((e) => e.type === 'lint').length === lintBefore);
+  // ---- 2b: floating objects written into the file (as Claude would) ----
+  await open(url); await sleep(1500);
+  const OBJS = '<div class="obj" id="o-sh" data-kind="shape" data-shape="rect" style="left:100px;top:100px;width:200px;height:100px;fill:#dbeafe;stroke:#2563eb;stroke-width:2"><svg viewBox="0 0 200 100"><rect width="200" height="100"/></svg></div>'
+    + '<div class="obj" id="o-ar" data-kind="arrow" data-shape="arrow" style="left:392px;top:592px;width:216px;height:16px;stroke:#2563eb;stroke-width:2"><svg viewBox="0 0 216 16" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="8" x2="208" y2="8"/></svg></div>'
+    + '<div class="obj" id="o-free" data-kind="shape" style="left:700px;top:260px;width:120px;height:120px;fill:#fde68a"><svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="5"/></svg></div>';
+  { const h = deckHtml(), at = h.lastIndexOf('</section>'); fs.writeFileSync(path.join(DECK, 'deck.html'), h.slice(0, at) + OBJS + h.slice(at)); }
+  await sleep(2500);
+  const ko = await kZoom();
+  const handle = (sel) => ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2}; })()`);
+  const objOrder = () => [...deckHtml().matchAll(/class="obj" id="(o-[a-z]+)"/g)].map((m) => m[1]).join();
+  let o5 = await rectOf('#o-sh'); await click(o5.x, o5.y); await sleep(300);
+  check('O click selects an object: shape bar', !!(await byTitle('填充')) && !(await byTitle('边框粗细')));
+  await drag(o5.x, o5.y, o5.x + 50 * ko, o5.y + 20 * ko); await sleep(2000);
+  check('O drag moves freely (no grid snap)', /id="o-sh"[^>]*style="left: 150px; top: 120px;/.test(deckHtml()));
+  let hd = await handle('.ppt-handle[data-handle="se"]');
+  await drag(hd.x, hd.y, hd.x + 40 * ko, hd.y + 20 * ko); await sleep(2000);
+  check('O resize redraws the svg at the new size', /id="o-sh"[^>]*style="left: 150px; top: 120px; width: 240px; height: 120px;[^"]*"><svg viewBox="0 0 240 120"><rect width="240" height="120">/.test(deckHtml()));
+  o5 = await rectOf('#o-sh'); hd = await handle('.ppt-rot');
+  await drag(hd.x, hd.y, o5.x + 200, o5.y + 5, 8); await sleep(2000);   // pointer right of the centre, Shift held
+  check('O rotate handle with Shift snaps to 90deg', /id="o-sh"[^>]*transform: rotate\(90deg\)/.test(deckHtml()), JSON.stringify({ hd, o5, at: await ev(`document.elementFromPoint(${hd.x}, ${hd.y})?.className`), html: (deckHtml().match(/<div class="obj" id="o-sh"[^>]*>/) || [])[0] }));
+  let b5 = await byTitle('填充'); await click(b5.x, b5.y); await sleep(200);
+  b5 = await byTitle('#ef4444'); await click(b5.x, b5.y); await sleep(2000);
+  check('O fill colour on a shape', /id="o-sh"[^>]*fill: rgb\(239, 68, 68\)/.test(deckHtml()));
+  await key('ArrowRight', 'ArrowRight', 39); await sleep(300); await key('ArrowDown', 'ArrowDown', 40, 8); await sleep(2000);
+  check('O arrow keys nudge 1px, Shift 10px', /id="o-sh"[^>]*style="left: 151px; top: 130px;/.test(deckHtml()));
+  b5 = await byTitle('置顶'); await click(b5.x, b5.y); await sleep(2000);
+  const zTop = objOrder();
+  b5 = await byTitle('置底'); await click(b5.x, b5.y); await sleep(2000);
+  check('O bring to front / send to back', [zTop, objOrder()].join(' | ') === 'o-ar,o-free,o-sh | o-sh,o-ar,o-free', `${zTop} | ${objOrder()}`);
+  o5 = await rectOf('#o-sh'); await dblclick(o5.x, o5.y); await sleep(300);
+  await type('AB'); await click(5, 60); await sleep(2000);
+  check('O double-click a shape types into its text area', /id="o-sh"[\s\S]*?<div class="obj-text">AB<\/div>/.test(deckHtml()));
+  o5 = await rectOf('#o-sh'); await click(o5.x, o5.y); await sleep(300);
+  await key('ArrowLeft', 'ArrowLeft', 37); await sleep(2000);
+  check('O shape text survives a redraw', /id="o-sh"[^>]*style="left: 150px;[\s\S]*?<div class="obj-text">AB<\/div>/.test(deckHtml()));
+  // arrow: endpoint handles instead of the box handles
+  const a5 = await rectOf('#o-ar'); await click(a5.x, a5.y); await sleep(300);
+  check('O arrow bar has no fill, shows endpoint handles', !(await byTitle('填充')) && !!(await byTitle('线条色'))
+    && (await ev(`!!document.querySelector('.ppt-end[data-handle="p2"]:not([hidden])') && !!document.querySelector('.ppt-handle[data-handle="se"][hidden]')`)));
+  hd = await handle('.ppt-end[data-handle="p2"]');
+  await drag(hd.x, hd.y, hd.x, hd.y - 100 * ko); await sleep(2000);
+  check('O dragging an arrow end redraws it', /id="o-ar"[^>]*style="left: 392px; top: 492px; width: 216px; height: 116px;[^"]*"><svg viewBox="0 0 216 116"[^>]*><line x1="8" y1="108" x2="208" y2="8"><\/line><polyline/.test(deckHtml()));
+  // an object drawn by Claude without data-shape, lying over a block
+  const f5 = await rectOf('#o-free'); await click(f5.x, f5.y); await sleep(300);
+  check('O object over a block wins the click', !!(await byTitle('填充')));
+  hd = await handle('.ppt-handle[data-handle="se"]');
+  await drag(hd.x, hd.y, hd.x + 30 * ko, hd.y + 30 * ko); await sleep(2000);
+  check('O Claude-written shape without data-shape still resizes', /id="o-free"[^>]*width: 150px; height: 150px;[^"]*"><svg viewBox="0 0 10 10">/.test(deckHtml()));
+  await key('Delete', 'Delete', 46); await sleep(2000);
+  check('O Delete removes the object', !deckHtml().includes('id="o-free"'));
+  // lint: the user's own placement is never reported; Claude's object off the canvas is
+  const lintN = () => inbox().filter((e) => e.type === 'lint').length;
+  const nl5 = lintN();
+  o5 = await rectOf('#o-sh'); await click(o5.x, o5.y); await sleep(300);
+  await drag(o5.x, o5.y, o5.x + 1000 * ko, o5.y); await sleep(2500);
+  check('L user dragging an object off the canvas raises no lint', lintN() === nl5 && /id="o-sh"[^>]*style="left: 1150px;/.test(deckHtml()), `${nl5} -> ${lintN()}`);
+  { const h = deckHtml(), at = h.lastIndexOf('</section>'); fs.writeFileSync(path.join(DECK, 'deck.html'), h.slice(0, at) + '<div class="obj" id="o-out" data-kind="icon" style="left:1400px;top:10px;width:64px;height:64px"><svg viewBox="0 0 24 24"></svg></div>' + h.slice(at)); }
+  await sleep(3000);
+  const lastLint = JSON.stringify(inbox().filter((e) => e.type === 'lint').at(-1) || {});
+  check('L Claude object off the canvas is reported', lastLint.includes('obj-outside') && lastLint.includes('o-out') && !lastLint.includes('o-sh'), lastLint);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
+} catch (err) {
+  check('script ran to the end', false, `${err.stack} | page errors: ${errors.join(' | ')}`);
 } finally {
   const failed = results.filter(([ok]) => !ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);

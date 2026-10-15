@@ -32,11 +32,12 @@
   const marks = el('div', null, ui);
   let selected = null, savedRange = null;
   const movable = (b) => !!b && b.id && b.classList.contains('block') && b.parentElement?.matches('section.slide');
+  const isObj = (n) => !!n && n.classList.contains('obj');
   function select(b) {
     // slide clicks preventDefault, so a reply box or popup keeps focus and would swallow Delete/Enter: release it
     if (b && document.activeElement?.closest?.('#ppt-ui')) document.activeElement.blur();
     selected = b;
-    tb.select(b, { editing: !!editing && editing.block === b, resizable: movable(b) });
+    tb.select(b, { editing: !!editing && editing.owner === b, resizable: movable(b) || isObj(b) });
   }
   function currentSlide() { // the slide showing the most area in the viewport
     let best = slides()[0], most = -1;
@@ -47,12 +48,13 @@
     return best;
   }
   const themeColors = () => [...new Set([...(document.getElementById('theme')?.textContent || '').matchAll(/--[\w-]+\s*:\s*(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\))/g)].map((m) => m[1]))];
-  function rememberColor(c) { if (c) ls.set('ppt-recent-colors', [c, ...ls.get('ppt-recent-colors', []).filter((x) => x !== c)].slice(0, 8)); }
+  function rememberColor(c) { if (c && c !== 'none') ls.set('ppt-recent-colors', [c, ...ls.get('ppt-recent-colors', []).filter((x) => x !== c)].slice(0, 8)); }
   const tb = PPTToolbar.create(ui, {
     place, themeColors, recentColors: () => ls.get('ppt-recent-colors', []),
     undo: () => undoRedo('undo'), redo: () => undoRedo('redo'),
     addText, addSlide, removeSlide,
-    startResize(handle, e) { if (selected) drag = { mode: handle, el: selected, slide: selected.closest('section.slide'), x0: e.clientX, y0: e.clientY, g0: G.gridOf(selected) }; },
+    startResize(handle, e) { if (selected) beginDrag(handle, selected, e); },
+    z: setZ,
     textStyle, blockStyle, toggle, border, toggleShadow,
     remove() { if (!selected) return; const id = selected.id; select(null); commit({ op: 'remove', target: id, label: `删除 ${id}` }); },
     ask: askSelected,
@@ -84,7 +86,7 @@
   }
   function blockStyle(style) {
     if (!selected) return;
-    rememberColor(style.background);
+    rememberColor(style.background || style.fill || style.stroke || style.color);
     commit({ op: 'setStyle', target: selected.id, args: { style }, label: `样式 ${styleLabel(style)} ${selected.id}` });
     tb.reposition();
   }
@@ -111,6 +113,33 @@
   }
   function toggleShadow() {
     if (selected) blockStyle({ 'box-shadow': selected.style.boxShadow ? null : '0 4px 16px rgba(0,0,0,.15)' });
+  }
+  function setZ(dir) {
+    if (!isObj(selected)) return;
+    commit({ op: 'setZ', target: selected.id, args: { z: dir }, label: `${dir === 'top' ? '置顶' : '置底'} ${selected.id}` });
+    tb.reposition();
+  }
+  // ---- floating objects: a drag is previewed as an op on the live DOM and committed on mouseup ----
+  function beginDrag(mode, t, e) {
+    const obj = isObj(t);
+    drag = { mode, el: t, slide: t.closest('section.slide'), x0: e.clientX, y0: e.clientY, target: e.target, obj,
+             g0: obj ? G.geomOf(t) : G.gridOf(t), e0: obj ? G.arrowEnds(t) : null };
+  }
+  function moveOp(o, e0, g0, dx, dy) { // arrows move by their ends so the drawing stays in sync
+    return e0 ? { op: 'setArrow', target: o.id, args: { x1: e0.x1 + dx, y1: e0.y1 + dy, x2: e0.x2 + dx, y2: e0.y2 + dy }, label: `移动 ${o.id}` }
+              : { op: 'setGeom', target: o.id, args: { ...g0, x: g0.x + dx, y: g0.y + dy }, label: `移动 ${o.id}` };
+  }
+  function objOp(d, e) {
+    const sr = d.slide.getBoundingClientRect(), k = G.W / sr.width, id = d.el.id;
+    const dx = (e.clientX - d.x0) * k, dy = (e.clientY - d.y0) * k;
+    if (d.mode === 'move') { const m = G.dragGeom({ x: 0, y: 0, w: 1, h: 1, rot: 0 }, dx, dy, 'move', e.shiftKey); return moveOp(d.el, d.e0, d.g0, m.x, m.y); }
+    if (d.mode === 'p1' || d.mode === 'p2') {
+      const p = d.mode === 'p1' ? { x1: d.e0.x1 + dx, y1: d.e0.y1 + dy } : { x2: d.e0.x2 + dx, y2: d.e0.y2 + dy };
+      return { op: 'setArrow', target: id, args: { ...d.e0, ...p }, label: `调整箭头 ${id}` };
+    }
+    const g = d.mode === 'rot' ? G.rotateTo(d.g0, (e.clientX - sr.left) * k, (e.clientY - sr.top) * k, e.shiftKey)
+                               : G.dragGeom(d.g0, dx, dy, d.mode, e.shiftKey);
+    return { op: 'setGeom', target: id, args: g, label: `${d.mode === 'rot' ? '旋转' : '调整大小'} ${id}` };
   }
 
   // ---- fit, reload, scroll restore ----
@@ -147,7 +176,7 @@
       const r = await fetch(api('/api/state'), { cache: 'no-store' });
       if (!r.ok) throw new Error(String(r.status));
       state = await r.json(); offline = false; online = state.online;
-      const typing = drag || pop || [...ui.querySelectorAll('textarea')].some((t) => t.value.trim() || t === document.activeElement);
+      const typing = drag || pop || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => t.value.trim() || t === document.activeElement);
       if (!editing && !saving && !typing && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing
       flush();
     } catch { offline = true; }
@@ -213,10 +242,7 @@
     if (!slide) { select(null); return; }
     e.preventDefault();
     closePop();
-    if (selected && selected.contains(e.target) && movable(selected)) {
-      drag = { mode: 'move', el: selected, slide, x0: e.clientX, y0: e.clientY, g0: G.gridOf(selected), target: e.target };
-      return;
-    }
+    if (selected && selected.contains(e.target) && (movable(selected) || isObj(selected))) return beginDrag('move', selected, e);
     drag = { mode: 'area', slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
     place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
   });
@@ -224,6 +250,7 @@
     if (!drag) return;
     const sr = drag.slide.getBoundingClientRect();
     if (drag.mode === 'area') return place(drag.box, G.slideToClient(sr, G.clientToSlide(sr, drag.x0, drag.y0, e.clientX, e.clientY)));
+    if (drag.obj) { O.apply(document, objOp(drag, e)); return tb.reposition(); }
     const k = G.W / sr.width; // live preview only; the op is committed on mouseup
     drag.el.style.gridArea = G.gridStr(G.dragGrid(drag.g0, (e.clientX - drag.x0) * k, (e.clientY - drag.y0) * k, drag.mode));
     tb.reposition();
@@ -232,6 +259,11 @@
     if (!drag) return;
     const d = drag; drag = null;
     const sr = d.slide.getBoundingClientRect();
+    if (d.obj) {
+      const op = objOp(d, e), before = d.e0 || d.g0;
+      if (Object.keys(before).some((key) => Math.round(op.args[key]) !== Math.round(before[key]))) commit(op);
+      return tb.reposition();
+    }
     if (d.mode !== 'area') {
       const k = G.W / sr.width;
       const g = G.gridStr(G.dragGrid(d.g0, (e.clientX - d.x0) * k, (e.clientY - d.y0) * k, d.mode));
@@ -245,7 +277,7 @@
     let r = G.clientToSlide(sr, d.x0, d.y0, e.clientX, e.clientY);
     if (r.w < 6 && r.h < 6) { // a click selects the innermost block under the pointer
       d.box.remove();
-      const b = document.elementFromPoint(e.clientX, e.clientY)?.closest('.block');
+      const b = document.elementFromPoint(e.clientX, e.clientY)?.closest('.obj, .block');
       return select(b && d.slide.contains(b) ? b : null);
     }
     select(null);
@@ -276,6 +308,7 @@
   document.addEventListener('contextmenu', (e) => {
     const sel = getSelection();
     const block = editing?.block;
+    const ownerId = editing?.owner.id;
     if (!block || !sel.rangeCount || sel.isCollapsed || !block.contains(sel.anchorNode) || !block.contains(sel.focusNode)) return;
     const range = sel.getRangeAt(0), quoted = range.toString();
     if (!quoted.trim()) return;
@@ -290,7 +323,7 @@
     openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `改这段：「${short}」`, async (text) => {
       await lastSave; // the user's own typing must be in deck.html before Claude reads it
       enqueue({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
-                cells: G.rectToCells(r), blocks: [block.id], text, quote });
+                cells: G.rectToCells(r), blocks: [ownerId], text, quote });
     });
   });
 
@@ -298,7 +331,7 @@
     if (!selected) return;
     const slide = selected.closest('section.slide'), r = G.elementRect(slide.getBoundingClientRect(), selected);
     const ids = [];
-    for (let n = selected; n && n !== slide; n = n.parentElement) if (n.classList.contains('block') && n.id) ids.push(n.id);
+    for (let n = selected; n && n !== slide; n = n.parentElement) if ((n.classList.contains('block') || isObj(n)) && n.id) ids.push(n.id);
     openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · ${selected.id}`, (text) => submitIntent(slide, r, text, ids));
   }
   function addText() {
@@ -332,6 +365,12 @@
     if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); undoRedo('undo'); }
     else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); undoRedo('redo'); }
     else if (e.key === 'Escape') { closePop(); select(null); }
+    else if (isObj(selected) && e.key.startsWith('Arrow')) {
+      e.preventDefault();
+      const n = e.shiftKey ? 10 : 1, dx = { ArrowLeft: -n, ArrowRight: n }[e.key] || 0, dy = { ArrowUp: -n, ArrowDown: n }[e.key] || 0;
+      commit(moveOp(selected, G.arrowEnds(selected), G.geomOf(selected), dx, dy));
+      tb.reposition();
+    }
     else if (selected && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); const id = selected.id; select(null); commit({ op: 'remove', target: id, label: `删除 ${id}` }); }
     else if (selected && e.key === 'Enter') { e.preventDefault(); askSelected(); }
   });
@@ -349,17 +388,23 @@
               cells: G.rectToCells(r), blocks, text, shot });
   }
 
-  // ---- direct text editing (double-click a leaf block) ----
+  // ---- direct text editing (double-click a leaf block, or a shape: its centred text area) ----
   document.addEventListener('dblclick', (e) => {
+    if (editing) return;
+    const o = e.target.closest('section.slide .obj[data-kind="shape"]');
+    if (o && o.id) return startEdit(o.querySelector(':scope > .obj-text') || el('div', 'obj-text', o), o);
     const b = e.target.closest('section.slide .block');
-    if (!b || editing || b.querySelector('.block') || !b.id) return;
-    closePop();
-    editing = { block: b, before: b.innerHTML };
-    b.contentEditable = 'true';
-    b.focus();
-    b.addEventListener('blur', onEditBlur);
-    select(b);
+    if (!b || b.querySelector('.block') || !b.id) return;
+    startEdit(b, b);
   });
+  function startEdit(t, owner) {
+    closePop();
+    editing = { block: t, owner, before: t.innerHTML };
+    t.contentEditable = 'true';
+    t.focus();
+    t.addEventListener('blur', onEditBlur);
+    select(owner);
+  }
   function onEditBlur(e) {
     if (e.relatedTarget?.closest?.('#ppt-ui')) return; // a toolbar control took focus: stay in edit mode
     endEdit();
@@ -370,12 +415,16 @@
   });
   async function endEdit() {
     if (!editing) return;
-    const { block, before } = editing;
+    const { block, owner, before } = editing;
     block.removeEventListener('blur', onEditBlur);
     block.removeAttribute('contenteditable');
     editing = null; savedRange = null;
     select(selected);
-    if (block.innerHTML !== before) await commit({ op: 'setHTML', target: block.id, args: { html: block.innerHTML }, label: `改字 ${block.id}` });
+    const html = block.innerHTML;
+    if (block !== owner && !html.trim()) block.remove(); // an empty text area added just for typing
+    if (html === before) return;
+    await commit(block === owner ? { op: 'setHTML', target: block.id, args: { html }, label: `改字 ${block.id}` }
+                                 : { op: 'setHTML', target: owner.id, args: { html, text: true }, label: `改字 ${owner.id}` });
   }
   document.addEventListener('paste', (e) => { // plain text only: no foreign markup or remote images in the deck
     if (!editing || !editing.block.contains(e.target)) return;

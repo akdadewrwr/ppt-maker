@@ -21,11 +21,18 @@
     if (far <= tol) return [a, b];
     return [...simplify(pts.slice(0, at + 1), tol).slice(0, -1), ...simplify(pts.slice(at), tol)];
   }
-  function smoothPath(pts) { // quadratic curves: each point is a control, midpoints are the anchors
+  const turn = (a, b, c) => { // direction change at b, 0..PI
+    const t = Math.abs(Math.atan2(c[1] - b[1], c[0] - b[0]) - Math.atan2(b[1] - a[1], b[0] - a[0]));
+    return Math.min(t, 2 * Math.PI - t);
+  };
+  function smoothPath(pts) { // gentle bends: quadratic with the point as control and midpoints as anchors; corners stay sharp
     const p = pts.map(([x, y]) => [n1(x), n1(y)]), f = ([x, y]) => `${x} ${y}`;
     if (p.length < 3) return `M${f(p[0])}L${f(p[p.length - 1])}`;
     let d = `M${f(p[0])}`;
-    for (let i = 1; i < p.length - 1; i++) d += `Q${f(p[i])} ${f([n1((p[i][0] + p[i + 1][0]) / 2), n1((p[i][1] + p[i + 1][1]) / 2)])}`;
+    for (let i = 1; i < p.length - 1; i++) {
+      if (turn(p[i - 1], p[i], p[i + 1]) > Math.PI / 4) { d += `L${f(p[i])}`; continue; } // a box drawn by hand keeps its corners
+      d += `Q${f(p[i])} ${f([n1((p[i][0] + p[i + 1][0]) / 2), n1((p[i][1] + p[i + 1][1]) / 2)])}`;
+    }
     return `${d}L${f(p[p.length - 1])}`;
   }
   const noteSize = (text) => ({ w: [...text].reduce((s, c) => s + (c.charCodeAt(0) > 255 ? 20 : 11), 0) + 12, h: 28 });

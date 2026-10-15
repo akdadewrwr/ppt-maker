@@ -153,7 +153,8 @@
   const K = window.PPTSketch || {};
   check('simplify drops collinear points', K.simplify && K.simplify(Array.from({ length: 50 }, (_, i) => [i * 2, 0])), [[0, 0], [98, 0]]);
   check('simplify keeps a corner', K.simplify && K.simplify([[0, 0], [50, 0], [100, 0], [100, 50], [100, 100]]), [[0, 0], [100, 0], [100, 100]]);
-  check('smoothPath: quadratic through midpoints', K.smoothPath && K.smoothPath([[0, 0], [10, 0], [10, 10]]), 'M0 0Q10 0 10 5L10 10');
+  check('smoothPath: a gentle bend becomes a quadratic through the midpoint', K.smoothPath && K.smoothPath([[0, 0], [10, 0], [20, 5]]), 'M0 0Q10 0 15 2.5L20 5');
+  check('smoothPath: a hand-drawn box keeps its corners', K.smoothPath && K.smoothPath([[0, 0], [100, 0], [100, 50], [0, 50], [0, 0]]), 'M0 0L100 0L100 50L0 50L0 0');
   check('smoothPath: one point is a dot', K.smoothPath && K.smoothPath([[5, 5]]), 'M5 5L5 5');
   const st = { type: 'stroke', color: '#ef4444', width: 4, pts: [[0, 0], [100, 50]] };
   check('bounds clamps to the canvas', K.bounds && [K.bounds([st], 8, true), K.bounds([st], 8, false), K.bounds([], 8, true)],

@@ -1,14 +1,13 @@
 ## 上一轮完成
-- 新建全局命令入口 C:/Users/user/.claude/commands/ppt.md（不在仓库里），在任何目录下都能用 /ppt。
-- 另一个 session 找不到 /ppt 的原因：它不是在 ppt-maker 目录下启动的（项目命令只从启动目录的 .claude/commands 加载）。
+- 按用户要求修改全局 /ppt（C:/Users/user/.claude/commands/ppt.md，仓库外）：deck 改为放在当前会话工作目录下的 decks/<名字>/，程序和模板仍从 ppt-maker 读取。
+- 验证过：deck 放在仓库外时服务正常（页面、编辑脚本、/api/state 都返回 200，.ppt 运行时目录建在 deck 旁边）。
 
 ## 关键结论
-- 全局入口只做转发：读取仓库里的 .claude/commands/ppt.md 并照做，路径一律用 PPT_HOME 绝对路径；deck 统一放在 PPT_HOME/decks/。规则只维护仓库里这一份。
-- 入口里写死了本机路径。开源时应改成插件或安装脚本，这是以后的事。
-- 在 ppt-maker 目录下，项目级和用户级的 /ppt 同名，两者都能用。
+- deck 跟着项目走：在哪个目录启动 Claude Code，deck 就建在那里的 decks/ 下；在 ppt-maker 目录下用效果不变。
+- 全局入口只做转发：读取仓库里的 ppt.md，ppt/… 换成 PPT_HOME 绝对路径，decks/… 换成 cwd 下的绝对路径。
 
 ## 改动文件
-- C:/Users/user/.claude/commands/ppt.md（新，仓库外）；.vibe/state.md
+- C:/Users/user/.claude/commands/ppt.md（仓库外）；.vibe/state.md
 
 ## 当前 blocker
 - 等用户在另一个 session 里试用草图功能的反馈；feat/sketch 尚未合并。

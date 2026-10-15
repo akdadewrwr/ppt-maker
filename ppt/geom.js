@@ -71,8 +71,14 @@
   const gridStr = (g) => `${g.r1}/${g.c1}/${g.r2}/${g.c2}`;
 
   function geomOf(o) { // floating object box in canvas px; derived from layout when Claude left a size out
-    const s = o.style, m = /rotate\((-?[\d.]+)deg\)/.exec(s.transform || ''), rot = m ? +m[1] : 0;
-    if (![s.left, s.top, s.width, s.height].every((v) => /px$/.test(v))) return { ...elementRect(o.closest('section.slide').getBoundingClientRect(), o), rot };
+    const s = o.style, m = /rotate\((-?[\d.]+)(deg|turn|rad|grad)?\)/.exec(s.transform || '');
+    const rot = m ? Math.round(+m[1] * { deg: 1, turn: 360, rad: 180 / Math.PI, grad: 0.9 }[m[2] || 'deg'] * 100) / 100 : 0;
+    if (![s.left, s.top, s.width, s.height].every((v) => /px$/.test(v))) {
+      // layout fallback: the bounding box of a rotated element is not its size, but its centre is the centre
+      const r = elementRect(o.closest('section.slide').getBoundingClientRect(), o), cs = getComputedStyle(o);
+      const w = parseFloat(cs.width) || r.w, h = parseFloat(cs.height) || r.h;
+      return { x: Math.round(r.x + r.w / 2 - w / 2), y: Math.round(r.y + r.h / 2 - h / 2), w, h, rot };
+    }
     return { x: parseFloat(s.left), y: parseFloat(s.top), w: parseFloat(s.width), h: parseFloat(s.height), rot };
   }
 

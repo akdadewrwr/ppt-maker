@@ -88,6 +88,7 @@
 
     // ---- icon panel: search the Lucide library, or describe one for Claude to draw ----
     const icons = el('div', 'ppt-abs ppt-icons', ui); icons.hidden = true;
+    for (const p of [menu, icons]) p.addEventListener('keydown', (k) => { if (k.key === 'Escape') p.hidden = true; });
     function openIcons(anchor) {
       icons.textContent = ''; icons.hidden = false;
       const q = el('input', null, icons); q.placeholder = '搜索图标（中文或英文）';

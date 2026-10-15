@@ -38,7 +38,7 @@
     // slide clicks preventDefault, so a reply box or popup keeps focus and would swallow Delete/Enter: release it
     if (b && document.activeElement?.closest?.('#ppt-ui')) document.activeElement.blur();
     selected = b;
-    tb.select(b, { editing: !!editing && editing.owner === b, resizable: movable(b) || isObj(b) });
+    tb.select(b, { editing: !!editing && editing.owner === b, resizable: movable(b) || (isObj(b) && !!b.id) });
   }
   function currentSlide() { // the slide showing the most area in the viewport
     let best = slides()[0], most = -1;
@@ -123,6 +123,7 @@
   const LINES = new Set(['line', 'arrow', 'arrow2']);
   function disarm() { armed = null; document.documentElement.classList.remove('ppt-armed'); }
   function addObj(slide, args) {
+    if (editing) endEdit(); // a drop or paste while typing: keys must act on the new object
     const id = O.newId(document, 'o-');
     if (!O.hasObjBase(document)) commit({ op: 'ensureBase', label: '补充对象样式' }); // an older deck: same save as the object
     commit({ op: 'insertObj', args: { id, slideId: slide.id, ...args }, label: `插入${KIND_ZH[args.kind]} ${id}` });
@@ -296,6 +297,7 @@
       drag = { mode: 'draw', shape: armed, slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
       return place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
     }
+    if (selected && selected.contains(e.target) && isObj(selected) && !selected.id) return toast(NO_ID);
     if (selected && selected.contains(e.target) && (movable(selected) || isObj(selected))) return beginDrag('move', selected, e);
     drag = { mode: 'area', slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
     place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
@@ -506,7 +508,9 @@
   });
   // ---- direct edits: ops applied live, queued, then saved onto the file text ----
   let chain = Promise.resolve();
+  const NO_ID = '这个元素还没有 id，等 Claude 补上后才能修改';
   function commit(op) {
+    if ('target' in op && !op.target) { toast(NO_ID); return lastSave; } // Claude left out the id: lint asks it to add one
     if (!O.apply(document, op)) { toast('这一步没有生效（目标已不存在）'); return lastSave; }
     ls.set('ppt-ops', [...ls.get('ppt-ops', []), op]); // survives reloads, server restarts and closed tabs
     return (lastSave = persist());

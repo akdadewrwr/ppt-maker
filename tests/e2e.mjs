@@ -419,15 +419,38 @@ try {
   check('I dropped image lands at the drop point (kept inside the slide)', nImg() === 3 && /data-kind="image" style="left: 0px; top: 80px; width: 480px; height: 240px;/.test(deckHtml()));
   await ev(`(() => { const dt = new DataTransfer(); dt.items.add(new File(['x'], 'a.txt', {type: 'text/plain'})); document.getElementById('s-cover').dispatchEvent(new DragEvent('drop', {dataTransfer: dt, clientX: __drop.x, clientY: __drop.y, bubbles: true, cancelable: true})); })()`); await sleep(800);
   check('I dropping a non-image explains and inserts nothing', nImg() === 3 && ((await ev(`document.querySelector('.ppt-toast:last-of-type')?.textContent`)) || '').includes('只支持'));
-  const ps = await rectOf('#b-cover-sub p'); await dblclick(ps.l + 20, ps.y); await sleep(300); // left end: the inserted images cover the middle
+  const ps = await rectOf('#b-p3-sub p'); await dblclick(ps.x, ps.y); await sleep(300); // slide 1's subtitle is squeezed under a reply bubble by now
+  const typingNow = await ev(`document.querySelector('#b-p3-sub').contentEditable === 'true'`);
   await ev(`${fileJs}.then((dt) => document.activeElement.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})))`); await sleep(2000);
   await key('Escape', 'Escape', 27); await sleep(1500);
-  check('I paste image while typing inserts nothing', nImg() === 3);
+  check('I paste image while typing inserts nothing', typingNow && nImg() === 3, `editing=${typingNow}`);
   // a move replayed after a save conflict is still the user's own: no lint for Claude
   const nl6 = inbox().filter((e) => e.type === 'lint').length;
   await ev(`localStorage.setItem('ppt-ops:' + PPT.token, JSON.stringify([{op: 'setArrow', target: 'o-ar', args: {x1: 1500, y1: 100, x2: 1700, y2: 100}, label: '移动 o-ar'}]))`);
   await send('Page.reload'); await sleep(3500);
   check('I replayed user move off the canvas raises no lint', inbox().filter((e) => e.type === 'lint').length === nl6 && /id="o-ar"[^>]*left: 1492px/.test(deckHtml()), `${nl6} -> ${inbox().filter((e) => e.type === 'lint').length}`);
+  // ---- 2b review minors ----
+  { const h = deckHtml(), at = h.indexOf('</section>'); fs.writeFileSync(path.join(DECK, 'deck.html'), h.slice(0, at) + '<div class="obj" data-kind="shape" style="left:900px;top:40px;width:100px;height:60px;fill:#fca5a5"><svg viewBox="0 0 100 60"><rect width="100" height="60"/></svg></div>' + h.slice(at)); }
+  await sleep(2500); await ev(`scrollTo(0, 0)`); await sleep(300);
+  const before7 = deckHtml();
+  const nid = await ev(`(() => { const r = document.querySelector('#s-cover > .obj:not([id])').getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2}; })()`);
+  await click(nid.x, nid.y); await sleep(300); await drag(nid.x, nid.y, nid.x + 50, nid.y); await sleep(300);
+  await key('ArrowRight', 'ArrowRight', 39); await sleep(2000);
+  const toasts = await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join(' | ')`);
+  check('M1 an object without id is not moved; the toast says it needs an id', deckHtml() === before7 && /id/.test(toasts) && !toasts.includes('目标已不存在')
+    && !(await ev(`document.querySelector('.ppt-pop')`)) && (await ev(`document.querySelector('#s-cover > .obj:not([id])').style.left`)) === '900px', toasts);
+  await key('Escape', 'Escape', 27); await sleep(200);
+  const ni0 = nImg();
+  await ev(`(() => { const r = document.getElementById('s-cover').getBoundingClientRect(), k = r.width / 1280; window.__drop = {x: r.left + 200 * k, y: r.top + 200 * k}; })()`);
+  const sb = await rectOf('#b-p3-sub p'); await dblclick(sb.x, sb.y); await sleep(300);
+  const editingNow = await ev(`document.querySelector('#b-p3-sub').contentEditable === 'true'`);
+  await ev(`${fileJs}.then((dt) => document.getElementById('s-cover').dispatchEvent(new DragEvent('drop', {dataTransfer: dt, clientX: __drop.x, clientY: __drop.y, bubbles: true, cancelable: true})))`); await sleep(2500);
+  const ni1 = nImg();
+  await key('Delete', 'Delete', 46); await sleep(2000);
+  check('M6 inserting while editing text ends edit mode, so keys act on the new object', editingNow && ni1 === ni0 + 1 && nImg() === ni0 && (await ev(`document.querySelector('#b-p3-sub').contentEditable`)) !== 'true', `${ni0} -> ${ni1} -> ${nImg()} editing=${editingNow}`);
+  b6 = await byTitle('插入图标'); await click(b6.x, b6.y); await sleep(300);
+  await key('Escape', 'Escape', 27); await sleep(200);
+  check('M7 Escape closes the icon panel from its search box', (await ev(`document.querySelector('.ppt-icons').hidden`)) === true);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

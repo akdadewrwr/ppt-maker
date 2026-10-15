@@ -209,9 +209,17 @@ def reply(deck, eid, text="", ack=False):
     append_jsonl(runtime(deck) / "outbox.jsonl", {"re": eid, "text": text, "ack": ack, "ts": now_iso()})
 
 
-def claude_label(deck):
+def outbox_rows(deck):
+    return read_jsonl(runtime(deck) / "outbox.jsonl")
+
+
+def claude_label(deck, since=0):
+    """Name a Claude write after the event it acked or answered since the last snapshot (the reply can land
+    before the watcher sees the write), else after the event still in progress."""
+    recent = [r.get("re") for r in outbox_rows(deck)[since:] if r.get("re")]
     working = [i for i, s in statuses(deck).items() if s == "processing"]
-    return f"Claude 处理 #{working[-1]}" if working else "Claude 修改"
+    eid = recent[-1] if recent else working[-1] if working else None
+    return f"Claude 处理 #{eid}" if eid else "Claude 修改"
 
 
 class History:
@@ -227,6 +235,7 @@ class History:
         except (OSError, ValueError):
             self.cur = len(self.rows) - 1
         self.ok = True
+        self.out_n = len(outbox_rows(self.deck))  # outbox rows already accounted for by a snapshot
         if self.cur < 0 or self._read(self.cur) != (self.deck / "deck.html").read_bytes():
             self.record("claude", "外部修改")  # changed while the server was not running
         self.known = deck_version(self.deck)
@@ -247,6 +256,7 @@ class History:
 
     def record(self, by, label):
         self.known = deck_version(self.deck)
+        self.out_n = len(outbox_rows(self.deck))
         try:
             for i in range(self.cur + 1, len(self.rows)):  # a new change drops the redo branch
                 self._file(i).unlink(missing_ok=True)
@@ -267,7 +277,7 @@ class History:
     def sync(self):
         """Record a write made outside the server (Claude editing deck.html)."""
         if deck_version(self.deck) != self.known:
-            self.record("claude", claude_label(self.deck))
+            self.record("claude", claude_label(self.deck, self.out_n))
 
     def step(self, d):
         """Undo (d=-1) or redo (d=+1); returns the row undone/redone, or None."""
@@ -315,6 +325,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")  # an uploaded image must never be sniffed into a page
         self.end_headers()
         self.wfile.write(body)
 

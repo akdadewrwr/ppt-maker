@@ -55,6 +55,14 @@ class PageTests(ServerCase):
         html = self.req("GET", "/?t=tok")[1].decode()
         self.assertLess(html.index("/_ppt/editor.js"), html.index("</BODY>"))
 
+    def test_nosniff(self):  # review M5: an uploaded "image" that is also HTML must never render as a page
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", "/_ppt/template.html", headers={"Host": f"127.0.0.1:{self.port}"})
+        r = c.getresponse()
+        r.read()
+        c.close()
+        self.assertEqual(r.getheader("X-Content-Type-Options"), "nosniff")
+
     def test_bad_host_rejected(self):
         self.assertEqual(self.req("GET", "/?t=tok", host=f"evil.com:{self.port}")[0], 403)
         self.assertEqual(self.req("GET", "/_ppt/server.py", host="evil.com")[0], 403)
@@ -315,6 +323,15 @@ class HistoryTests(ServerCase):
 
     def deck_text(self):
         return (self.deck / "deck.html").read_text(encoding="utf-8")
+
+    def test_claude_label_survives_a_fast_reply(self):  # Claude may reply before the 0.5 s watcher tick
+        self.req("POST", "/api/event?t=tok", {"type": "intent", "slide_id": "s-cover", "text": "x"})
+        server.reply(self.deck, "e1", ack=True)
+        with server.LOCK:  # hold the watcher off so write + reply both land before the snapshot
+            (self.deck / "deck.html").write_text(self.deck_text().replace("副标题", "CLAUDE"), encoding="utf-8")
+            server.reply(self.deck, "e1", "改好了")
+            self.srv.history.sync()
+        self.assertEqual(self.srv.history.rows[-1]["label"], "Claude 处理 #e1")
 
     def test_put_records_user_snapshot(self):
         a = self.deck_text()

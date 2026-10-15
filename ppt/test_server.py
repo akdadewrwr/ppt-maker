@@ -1,4 +1,4 @@
-import http.client, io, json, os, shutil, socket, sys, tempfile, threading, unittest, zipfile
+import contextlib, http.client, io, json, os, shutil, socket, sys, tempfile, threading, unittest, zipfile
 import time as _time
 from pathlib import Path
 from unittest import mock
@@ -744,9 +744,11 @@ class KbServerTests(ServerCase):
     def test_kb_done_and_fail_cli(self):
         _, body = self.up(b"# x", "a.md")
         kid = body["item"]["id"]
-        server.main(["--kb-done", str(self.deck), "project", kid, "年报", "营收", "12.3 亿"])
+        with contextlib.redirect_stdout(io.StringIO()):  # keep the CLI's one-line confirmation out of the test report
+            server.main(["--kb-done", str(self.deck), "project", kid, "年报", "营收", "12.3 亿"])
         self.assertEqual({k: kb.load(self.r)[0][k] for k in ("status", "title", "summary")}, {"status": "ready", "title": "年报", "summary": "营收 12.3 亿"})
-        server.main(["--kb-fail", str(self.deck), "project", kid, "加密", "PDF"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            server.main(["--kb-fail", str(self.deck), "project", kid, "加密", "PDF"])
         self.assertEqual((kb.load(self.r)[0]["status"], kb.load(self.r)[0]["note"]), ("failed", "加密 PDF"))
 
     def test_intent_kb_field(self):

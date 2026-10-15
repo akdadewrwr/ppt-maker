@@ -106,6 +106,7 @@
   const a40 = -40 * Math.PI / 180;
   check('rotateTo Shift snaps to 15', G.rotateTo(og, 150 + 100 * Math.cos(a40), 125 + 100 * Math.sin(a40), true), {...og, rot:45});
   check('lint objects', G.lint(document.getElementById('s3')).map((i) => `${i.kind}:${i.block}`).sort(), ['missing-id:null', 'obj-geometry:g2', 'obj-outside:g3']);
+  check('hitBlocks also returns objects', G.hitBlocks(document.getElementById('s3'), { x: 95, y: 195, w: 5, h: 5 }), ['g5']);
 
   // ---- ops ----
   const O = PPTOps;
@@ -242,6 +243,16 @@
   const od1 = mo(), od2 = mo();
   OSEQ.forEach((op) => { O.apply(od1, op); O.apply(od2, op); });
   check('obj ops deterministic on two copies', ser(od1) === ser(od2) && ser(od1) !== ser(mo()), true);
+  // ---- 3: ink objects ----
+  const ink = K.inkSVG ? K.inkSVG([{ type: 'stroke', color: '#ef4444', width: 4, pts: [[10, 10], [60, 40]] }, { type: 'note', color: '#111827', x: 70, y: 10, text: '注' }]) : { geom: {}, html: '' };
+  const idoc = mo();
+  check('ink insertObj', O.apply(idoc, { op: 'insertObj', args: { id: 'k1', slideId: 'u1', kind: 'ink', geom: ink.geom, html: ink.html } }), true);
+  O.apply(idoc, { op: 'setInkColor', target: 'k1', args: { color: '#2563eb' } });
+  check('setInkColor recolours every stroke and note', [...idoc.querySelectorAll('#k1 path, #k1 text')].map((n) => n.getAttribute('stroke') || n.getAttribute('fill')), ['#2563eb', '#2563eb']);
+  check('setInkColor only on ink', O.apply(idoc, { op: 'setInkColor', target: 'ub', args: { color: '#2563eb' } }), false);
+  const id1 = mo(), id2 = mo(), ISEQ = [{ op: 'insertObj', args: { id: 'k1', slideId: 'u1', kind: 'ink', geom: ink.geom, html: ink.html } }, { op: 'setInkColor', target: 'k1', args: { color: '#16a34a' } }];
+  ISEQ.forEach((op) => { O.apply(id1, op); O.apply(id2, op); });
+  check('ink ops deterministic on two copies', ser(id1) === ser(id2) && ser(id1) !== ser(mo()), true);
 
   const r = document.getElementById('result');
   r.textContent = `${pass === total ? 'PASS' : 'FAIL'} ${pass}/${total}`; r.className = pass === total ? 'pass' : 'fail';

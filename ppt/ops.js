@@ -8,7 +8,7 @@
   const OBJ_OK = new Set([...STYLE_OK, 'left', 'top', 'width', 'height', 'transform', 'z-index', 'fill', 'stroke', 'stroke-width']);
   OBJ_OK.delete('grid-area');
   const ROTATE = /^rotate\(-?\d+(\.\d+)?deg\)$/;
-  const KINDS = new Set(['shape', 'arrow', 'icon', 'image']);
+  const KINDS = new Set(['shape', 'arrow', 'icon', 'image', 'ink']);
   const DEEP = new Set(['color', 'font-size', 'font-weight', 'font-style', 'text-decoration', 'text-align']);
   // tags whose own default (bold headings, italic <em>, underlined links) would ignore an inherited block value
   const TAGS = { 'font-weight': 'h1,h2,h3,h4,h5,h6,b,strong,th', 'font-style': 'i,em', 'text-decoration': 'u,ins,a' };
@@ -145,6 +145,11 @@
       if (!isObj(t) || !['top', 'bottom'].includes(a.z)) return false;
       const s = t.parentElement;
       if (a.z === 'top') s.append(t); else s.querySelector(':scope > .obj').before(t);
+    },
+    setInkColor(doc, t, a) { // a kept sketch turns one colour as a whole
+      if (!isObj(t) || t.dataset.kind !== 'ink' || !a.color) return false;
+      t.querySelectorAll('path').forEach((p) => p.setAttribute('stroke', a.color));
+      t.querySelectorAll('text').forEach((x) => x.setAttribute('fill', a.color));
     },
     ensureBase(doc) {
       if (hasObjBase(doc)) return;

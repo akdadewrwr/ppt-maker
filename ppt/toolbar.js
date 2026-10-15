@@ -53,6 +53,7 @@
     btn(top, '✎ 草图', '在当前页上画草图', () => cb.sketch());
     btn(top, '+草图页', '插入空白页并画草图', () => cb.addSketchSlide());
     btn(top, '📚 知识库', '打开知识库', () => cb.kb());
+    const batchBtn = btn(top, '📝 清单', '打开待发清单', () => cb.batch()); batchBtn.hidden = true;
     sep(top);
     btn(top, '+页', '在当前页之后插入空白页', () => cb.addSlide());
     const delSlide = btn(top, '−页', '删除当前页', () => cb.removeSlide());
@@ -212,6 +213,7 @@
       },
       setStatus(text, off) { status.textContent = text; status.classList.toggle('off', !!off); },
       setSlideCount(n) { delSlide.disabled = n < 2; },
+      setBatchCount(n) { batchBtn.hidden = !n; batchBtn.textContent = `📝 清单 (${n})`; },
     };
   }
 

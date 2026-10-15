@@ -608,6 +608,53 @@ try {
   await key('Escape', 'Escape', 27); await sleep(500);
   check('BR and comes back afterwards', (await ev(`getComputedStyle(document.querySelector('.ppt-kb')).display`)) !== 'none');
   b9 = await byTitle('关闭知识库'); await click(b9.x, b9.y); await sleep(300);
+  // ---- 5: batch ----
+  await open(url); await ev(`scrollTo(0, 0)`); await sleep(300);
+  const batchLen = () => ev(`(JSON.parse(localStorage.getItem('ppt-batch:' + PPT.token) || '{"items":[]}').items || []).length`);
+  const intents = () => inbox().filter((e) => e.type === 'intent').length;
+  const SP = async (sid, x, y) => { const s = await ev(`(() => { const r = document.getElementById(${JSON.stringify(sid)}).getBoundingClientRect(); return {l: r.left, t: r.top, k: r.width / 1280}; })()`); return [s.l + x * s.k, s.t + y * s.k]; };
+  const ctrlEnter = () => key('Enter', 'Enter', 13, 2);
+  const n0q = intents();
+  await drag(...(await SP('s-cover', 900, 560)), ...(await SP('s-cover', 1200, 700))); await sleep(300);
+  await type('这里加一句口号'); await ctrlEnter(); await sleep(800);
+  check('Q Ctrl+Enter puts it in the list, nothing is sent', (await batchLen()) === 1 && intents() === n0q
+    && ((await ev(`document.querySelector('.ppt-pending b')?.textContent`)) || '').includes('待发') && !!(await byTitle('打开待发清单')));
+  await drag(...(await SP('s-cover', 100, 560)), ...(await SP('s-cover', 400, 700))); await sleep(300);
+  check('Q with a list, the box says Enter adds to it', ((await ev(`document.querySelector('.ppt-pop textarea').placeholder`)) || '').includes('加入清单'));
+  await type('这里放联系方式'); await enter(); await sleep(800);
+  check('Q Enter adds while the list is not empty', (await batchLen()) === 2 && intents() === n0q);
+  await ev(`document.getElementById('s-p2').scrollIntoView({block: 'center'})`); await sleep(300);
+  await drag(...(await SP('s-p2', 80, 80)), ...(await SP('s-p2', 600, 300))); await sleep(300);
+  b9 = await byTitle('先放进待发清单'); await type('第二页标题改短'); await click(b9.x, b9.y); await sleep(800);
+  check('Q the list spans slides', (await batchLen()) === 3 && (await ev(`document.querySelectorAll('.ppt-pending').length`)) === 3);
+  b9 = await byTitle('打开待发清单'); await click(b9.x, b9.y); await sleep(500);
+  check('Q panel lists the items with screenshots', (await ev(`document.querySelectorAll('.ppt-batch .ppt-kb-item').length`)) === 3 && (await ev(`!!document.querySelector('.ppt-batch img[src^="data:image/png"]')`)));
+  await ev(`(() => { const t = document.querySelectorAll('.ppt-batch .ppt-kb-item textarea')[1]; t.value = '联系方式放右下角'; t.dispatchEvent(new Event('input')); })()`);
+  b9 = await byTitle('从清单里删掉这一条'); await click(b9.x, b9.y); await sleep(500); // the first item's button
+  check('Q delete drops that item, edits to the others are kept', (await batchLen()) === 2
+    && (await ev(`JSON.parse(localStorage.getItem('ppt-batch:' + PPT.token)).items[0].text`)) === '联系方式放右下角');
+  await ev(`(() => { const t = document.querySelector('.ppt-batch-note'); t.value = '整体改成更简洁的风格'; t.dispatchEvent(new Event('input')); })()`);
+  b9 = await byTitle('把清单作为一个整体发给 Claude'); await click(b9.x, b9.y); await sleep(2500);
+  const be = inbox().filter((e) => e.type === 'intent').at(-1);
+  check('Q send all: one batch intent, note, items, shots stored per item', be?.kind === 'batch' && be.text === '整体改成更简洁的风格' && be.items?.length === 2
+    && be.items.every((i, k) => !i.shot || i.shot === `.ppt/shots/${be.id}-${k + 1}.png`) && be.items.some((i) => i.shot && fs.existsSync(path.join(DECK, i.shot))), JSON.stringify(be?.items?.map((i) => i.shot)));
+  await sleep(1500);
+  check('Q the list is empty again and the marks show the batch ids', (await batchLen()) === 0 && !(await byTitle('打开待发清单'))
+    && ((await ev(`[...document.querySelectorAll('.ppt-mark b')].map((b) => b.textContent).join()`)) || '').includes(`#${be.id}-1`));
+  py('--reply', 'decks/e2e-smoke', be.id, '两处都改好了'); await sleep(2500);
+  await ev(`(() => { const b = [...document.querySelectorAll('.ppt-bubble')].find((n) => n.textContent.includes('两处都改好了')); b.querySelector('textarea').id = 'batch-answer'; b.scrollIntoView({block: 'center'}); })()`); await sleep(200);
+  const bta = await rectOf('#batch-answer'); await click(bta.x, bta.y); await type('口号再短一点'); await enter(); await sleep(2000);
+  check('Q answering a batch refers to the batch', inbox().at(-1)?.type === 'answer' && inbox().at(-1).re === be.id, JSON.stringify(inbox().at(-1)));
+  // a deleted slide and a full browser store must not break the list
+  await ev(`localStorage.setItem('ppt-batch:' + PPT.token, JSON.stringify({note: '', items: [{slide: 9, slide_id: 's-gone', rect: {x: 0, y: 0, w: 10, h: 10}, cells: '1-1/1-1', blocks: [], text: '旧页'}]}))`);
+  await open(url); await sleep(1000);
+  check('Q a list item on a deleted slide does not break the page', !!(await byTitle('打开待发清单')) && (await ev(`document.querySelectorAll('.ppt-pending').length`)) === 0);
+  await ev(`(() => { const set = Storage.prototype.setItem; window.__realSet = set; Storage.prototype.setItem = function (k, v) { if (k.startsWith('ppt-batch') && v.includes('data:image')) throw new DOMException('full', 'QuotaExceededError'); return set.call(this, k, v); }; })()`);
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  await drag(...(await SP('s-cover', 900, 100)), ...(await SP('s-cover', 1200, 200))); await sleep(300); await type('存储满时'); await enter(); await sleep(1500);
+  check('Q storage full: item kept without its screenshot', (await batchLen()) === 2 && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('不带截图'));
+  await ev(`Storage.prototype.setItem = window.__realSet; localStorage.setItem('ppt-batch:' + PPT.token, '{"note":"","items":[]}')`);
+  await open(url); await sleep(500);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

@@ -74,3 +74,8 @@ body { padding-top: 48px; }
 .ppt-kb-card { white-space: pre-wrap; font: 12px/1.5 Consolas, "Microsoft YaHei", monospace; background: #f9fafb; border-radius: 6px; padding: 6px; max-height: 240px; overflow: auto; }
 .ppt-kb-skill { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0; cursor: pointer; }
 .ppt-sketching .ppt-kb { display: none !important; } /* the board needs the whole slide; the panel comes back after */
+.ppt-mark.ppt-pending { border: 2px dashed #7c3aed; } .ppt-mark.ppt-pending b { background: #7c3aed; }
+.ppt-pop .ppt-row { justify-content: flex-end; margin: 6px 0 0; }
+.ppt-batch-note { width: 100%; min-height: 56px; box-sizing: border-box; margin-bottom: 6px; }
+.ppt-batch-shot { display: block; max-width: 100%; max-height: 120px; margin: 4px 0; border: 1px solid #e5e7eb; border-radius: 4px; }
+.ppt-batch .ppt-kb-item textarea { width: 100%; min-height: 48px; box-sizing: border-box; }

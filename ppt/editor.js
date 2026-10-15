@@ -61,7 +61,8 @@
     addImage: (f) => addImage(f, null),
     addIcon, drawIcon,
     sketch: () => openSketch(currentSlide()), addSketchSlide,
-    kb: () => kbPanel.toggle(),
+    kb: () => { batchPanel.toggle(false); kbPanel.toggle(); },
+    batch: () => { kbPanel.toggle(false); batchPanel.toggle(); },
     inkColor(c) {
       if (!c || !isObj(selected)) return;
       rememberColor(c);
@@ -72,6 +73,9 @@
     ask: askSelected,
   });
   const kbPanel = PPTKB.create(ui, { api, toast, ask: askWithKb });
+  const batchPanel = PPTBatch.create(ui, { get: batch, set: setBatch, send: sendBatch,
+    locate: (it) => document.getElementById(it.slide_id || '')?.scrollIntoView({ block: 'center' }) });
+  tb.setBatchCount(batch().items.length);
   addEventListener('scroll', () => tb.reposition(), { passive: true });
   function restoreRange() { // put the edit-mode selection back after a toolbar control took focus
     if (!editing) return false;
@@ -194,7 +198,7 @@
     openSketch(n);
   }
   function sendSketch(slide, getItems) { // the board stays live under the box: read the sketch when it is sent
-    openPop(slide, PPTSketch.bounds(getItems(), 8, true), el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · 草图`, async (text) => {
+    openPop(slide, PPTSketch.bounds(getItems(), 8, true), el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · 草图`, async (text, toBatch) => {
       const items = getItems(), r = PPTSketch.bounds(items, 8, true), notes = items.filter((i) => i.type === 'note').map((i) => i.text);
       sketch?.close(true);
       let shot = null;
@@ -203,8 +207,8 @@
         PPTSketch.drawOnCanvas(c.getContext('2d'), items, c.width / G.W);
         shot = c.toDataURL('image/png');
       } catch (err) { console.warn('[ppt] sketch screenshot failed', err); }
-      enqueue({ type: 'intent', kind: 'sketch', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
-                cells: G.rectToCells(r), blocks: G.hitBlocks(slide, r), text, notes, shot });
+      deliver({ type: 'intent', kind: 'sketch', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
+                cells: G.rectToCells(r), blocks: G.hitBlocks(slide, r), text, notes, shot }, toBatch);
     }, '按草图修改这一页');
   }
   function keepSketch(slide, items) {
@@ -251,7 +255,7 @@
   let flushing = false, online = false, offline = false, state = null;
   function enqueue(ev) {
     const q = [...ls.get('ppt-queue', []), ev];
-    if (!ls.set('ppt-queue', q)) ls.set('ppt-queue', q.map((e) => ({ ...e, shot: undefined }))); // quota: drop screenshots
+    if (!ls.set('ppt-queue', q)) ls.set('ppt-queue', q.map((e) => ({ ...e, shot: undefined, items: e.items?.map((i) => ({ ...i, shot: undefined })) }))); // quota: drop screenshots
     flush();
   }
   async function flush() {
@@ -290,10 +294,17 @@
     tb.setHistory(offline ? null : state?.history);
     tb.setSlideCount(slides().length);
     if (!state || (document.activeElement && document.activeElement.closest('.ppt-bubble'))) return; // don't wipe a half-typed answer
-    const key = JSON.stringify([state.events, ls.get('ppt-dismissed', []), scrollX, document.documentElement.style.cssText]);
+    const key = JSON.stringify([state.events, batch().items.map((i) => [i.slide_id, i.rect]), ls.get('ppt-dismissed', []), scrollX, document.documentElement.style.cssText]);
     if (key === lastKey) return;
     lastKey = key;
     marks.textContent = '';
+    batch().items.forEach((it, i) => { // what waits in the list, numbered where it applies
+      const s = document.getElementById(it.slide_id || '');
+      if (!s || !it.rect) return;
+      const m = el('div', 'ppt-abs ppt-mark ppt-pending', marks);
+      place(m, G.slideToClient(s.getBoundingClientRect(), it.rect));
+      el('b', null, m, `${i < 20 ? String.fromCharCode(0x2460 + i) : `(${i + 1})`} 待发`);
+    });
     const dismissed = new Set(ls.get('ppt-dismissed', []));
     const threads = new Map();
     for (const e of state.events) {
@@ -321,7 +332,7 @@
       ta.onkeydown = (k) => {
         if (k.key !== 'Enter' || k.shiftKey || !ta.value.trim()) return;
         k.preventDefault();
-        enqueue({ type: 'answer', re: rootId, slide_id: root.slide_id, text: ta.value.trim() });
+        enqueue({ type: 'answer', re: root.parent || rootId, slide_id: root.slide_id, text: ta.value.trim() }); // a batch item answers its batch
         ta.blur(); lastKey = '';
       };
     }
@@ -388,27 +399,72 @@
       return select(b && d.slide.contains(b) ? b : null);
     }
     select(null);
-    openPop(d.slide, r, d.box, `第 ${slides().indexOf(d.slide) + 1} 页 · 网格 ${G.rectToCells(r)}`, (text) => submitIntent(d.slide, r, text));
+    openPop(d.slide, r, d.box, `第 ${slides().indexOf(d.slide) + 1} 页 · 网格 ${G.rectToCells(r)}`, (text, toBatch) => submitIntent(d.slide, r, text, undefined, {}, toBatch));
   });
 
-  function openPop(slide, r, box, label, onSend, fallback = '') {
+  // ---- the 待发清单: intents wait here until "全部发送" sends them as one ----
+  function batch() { // hoisted: the panel and the top bar read it during start-up
+    const b = ls.get('ppt-batch', null);
+    return b && Array.isArray(b.items) ? b : { note: '', items: [] };
+  }
+  function setBatch(b, refreshPanel = true) {
+    if (!ls.set('ppt-batch', b)) toast('浏览器存储已满，清单没能保存');
+    lastKey = ''; render(); tb.setBatchCount(b.items.length);
+    if (refreshPanel) batchPanel.refresh();
+    if (!b.items.length) batchPanel.toggle(false);
+  }
+  function addToBatch(p) {
+    const b = batch();
+    if (b.items.length >= 30) return toast('清单最多 30 条，请先发送一批');
+    const { type, ...item } = p;
+    b.items.push(item);
+    if (!ls.set('ppt-batch', b)) {
+      delete item.shot;
+      if (!ls.set('ppt-batch', b)) return toast('浏览器存储已满，没能加入清单');
+      toast('浏览器存储已满，这一条不带截图');
+    }
+    setBatch(b);
+  }
+  function sendBatch() {
+    const b = batch();
+    if (!b.items.length) return;
+    const ev = { type: 'intent', kind: 'batch', text: (b.note || '').trim() || '按清单修改', items: b.items };
+    if (JSON.stringify(ev).length > 9e6) return toast('清单太大（截图太多），请分两批发送');
+    enqueue(ev);
+    setBatch({ note: '', items: [] });
+  }
+  const deliver = (p, toBatch) => (toBatch ? addToBatch(p) : enqueue(p));
+
+  function openPop(slide, r, box, label, onSend, fallback = '') { // onSend(text, toBatch)
     closePop(); // one box at a time: an orphaned one could not be closed and would hold off reloads
     const cr = G.slideToClient(slide.getBoundingClientRect(), r);
     place(box, cr);
     const node = el('div', 'ppt-abs ppt-pop', ui);
     place(node, panelBeside(cr, false));
     el('div', 'who', node, label);
-    const ta = el('textarea', null, node); ta.placeholder = '想怎么改这里？Enter 发送 · Shift+Enter 换行 · Esc 取消';
+    const listed = batch().items.length;
+    const ta = el('textarea', null, node);
+    ta.placeholder = listed ? `想怎么改这里？Enter 加入清单（已有 ${listed} 条）· Shift+Enter 换行 · Esc 取消`
+      : '想怎么改这里？Enter 发送 · Ctrl+Enter 加入清单 · Shift+Enter 换行 · Esc 取消';
     pop = { box, node };
+    const go = (toBatch) => {
+      const text = ta.value.trim() || fallback;
+      if (!text) return;
+      closePop();
+      onSend(text, toBatch);
+    };
+    const row = el('div', 'ppt-row', node);
+    for (const [label2, title, toBatch] of [['发送', '立刻发给 Claude', false], ['加入清单', '先放进待发清单（Ctrl+Enter）', true]]) {
+      const b = el('button', 'ppt-btn', row, label2); b.type = 'button'; b.title = title;
+      b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the textarea focused
+      b.addEventListener('click', () => go(toBatch));
+    }
     setTimeout(() => ta.focus());
     ta.onkeydown = (k) => {
       if (k.key === 'Escape') return closePop();
       if (k.key !== 'Enter' || k.shiftKey) return;
       k.preventDefault();
-      const text = ta.value.trim() || fallback;
-      if (!text) return;
-      closePop();
-      onSend(text);
+      go(k.ctrlKey || k.metaKey || batch().items.length > 0);
     };
   }
 
@@ -428,24 +484,24 @@
     const slide = block.closest('section.slide'), sr = slide.getBoundingClientRect(), qr = range.getBoundingClientRect();
     const r = G.clientToSlide(sr, qr.left, qr.top, qr.right, qr.bottom);
     const short = quoted.length > 24 ? quoted.slice(0, 24) + '…' : quoted;
-    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `改这段：「${short}」`, async (text) => {
+    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `改这段：「${short}」`, async (text, toBatch) => {
       await lastSave; // the user's own typing must be in deck.html before Claude reads it
-      enqueue({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
-                cells: G.rectToCells(r), blocks: [ownerId], text, quote });
+      deliver({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
+                cells: G.rectToCells(r), blocks: [ownerId], text, quote }, toBatch);
     });
   });
 
   function askWithKb(ids, title) { // from the knowledge base panel: "use this item on the current page"
     const s = currentSlide(), r = { x: 0, y: 0, w: G.W, h: G.H };
     openPop(s, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(s) + 1} 页 · 参考《${title}》`,
-      (text) => submitIntent(s, r, text, [], { kb: ids }), '按这份资料更新这一页');
+      (text, toBatch) => submitIntent(s, r, text, [], { kb: ids }, toBatch), '按这份资料更新这一页');
   }
   function askSelected() {
     if (!selected) return;
     const slide = selected.closest('section.slide'), r = G.elementRect(slide.getBoundingClientRect(), selected);
     const ids = [];
     for (let n = selected; n && n !== slide; n = n.parentElement) if ((n.classList.contains('block') || isObj(n)) && n.id) ids.push(n.id);
-    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · ${selected.id}`, (text) => submitIntent(slide, r, text, ids));
+    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · ${selected.id}`, (text, toBatch) => submitIntent(slide, r, text, ids, {}, toBatch));
   }
   function addText() {
     const s = currentSlide(), id = O.newId(document, 'b-');
@@ -489,7 +545,7 @@
     else if (selected && e.key === 'Enter') { e.preventDefault(); askSelected(); }
   });
 
-  async function submitIntent(slide, r, text, blocks = G.hitBlocks(slide, r), extra = {}) {
+  async function submitIntent(slide, r, text, blocks = G.hitBlocks(slide, r), extra = {}, toBatch = false) {
     let shot = null;
     try {
       const full = await htmlToImage.toCanvas(slide, { width: G.W, height: G.H, pixelRatio: 1, style: { zoom: '1', margin: '0' } });
@@ -498,8 +554,8 @@
       c.getContext('2d').drawImage(full, r.x, r.y, c.width, c.height, 0, 0, c.width, c.height);
       shot = c.toDataURL('image/png');
     } catch (err) { console.warn('[ppt] screenshot failed', err); }
-    enqueue({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
-              cells: G.rectToCells(r), blocks, text, shot, ...extra });
+    deliver({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
+              cells: G.rectToCells(r), blocks, text, shot, ...extra }, toBatch);
   }
 
   // ---- direct text editing (double-click a leaf block, or a shape: its centred text area) ----

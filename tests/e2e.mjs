@@ -245,6 +245,7 @@ try {
   const n0 = nSlides();
   let tb = await byTitle('在当前页之后插入空白页'); await click(tb.x, tb.y); await sleep(2000);
   check('T +页 inserts a slide', nSlides() === n0 + 1);
+  check('T the edit event names the new slide, not a block', /^s-/.test(inbox().at(-1)?.slide_id || '') && !inbox().at(-1)?.block, JSON.stringify(inbox().at(-1)));
   tb = await byTitle('删除当前页'); await click(tb.x, tb.y); await sleep(2000);
   check('T −页 removes a slide', nSlides() === n0);
   tb = await byTitle('在当前页中央插入文字块'); await click(tb.x, tb.y); await sleep(2000);
@@ -528,6 +529,15 @@ try {
   const kr = inbox().filter((e) => e.type === 'intent').at(-1);
   check('KR a note typed but not confirmed is still sent', JSON.stringify(kr?.notes || []).includes('最后'), JSON.stringify({ ...kr, shot: !!kr?.shot }));
   check('KR strokes drawn while the send box is open are sent too', !!kr && kr.rect.x + kr.rect.w >= 1100, JSON.stringify(kr?.rect));
+  // a broken draft in the browser must not break sketch mode; wide Latin notes fit their backing
+  await ev(`localStorage.setItem('ppt-sketch:s-cover:' + PPT.token, JSON.stringify({bad: 1}))`);
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(300);
+  await drag(...P(100, 300), ...P(300, 300)); await sleep(200);
+  b8 = await byTitle('T 标注'); await click(b8.x, b8.y); await click(...P(100, 400)); await sleep(300); await type('WWWWWWWW'); await enter(); await sleep(200);
+  check('KR a malformed draft is ignored, drawing still works', (await counts()) === '1,1', await counts());
+  check('KR a wide Latin note fits its backing', await ev(`(() => { const g = document.querySelector('.ppt-sketch g'); return g.querySelector('rect').width.baseVal.value >= g.querySelector('text').getBBox().width + 6; })()`));
+  await key('Escape', 'Escape', 27); await sleep(500);
   { const h = deckHtml(), at = h.lastIndexOf('</body>'); fs.writeFileSync(path.join(DECK, 'deck.html'), h.slice(0, at) + '<section class="slide"><div class="block" style="grid-area:2/2/4/8">无 id 页</div></section>\n' + h.slice(at)); }
   await sleep(2500); await ev(`document.querySelector('section.slide:not([id])').scrollIntoView({block: 'center'})`); await sleep(500);
   b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(500);

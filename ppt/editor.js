@@ -575,10 +575,11 @@
       const doc = new DOMParser().parseFromString(raw.html, 'text/html');
       ops.forEach((op) => O.apply(doc, op));
       const last = ops[ops.length - 1], target = last.target && document.getElementById(last.target);
+      const pageId = { insertSlide: last.args?.id, removeSlide: last.target }[last.op]; // page ops name the page, not a block
       const r = await fetch(api('/api/deck'), { method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ version, html: '<!doctype html>\n' + doc.documentElement.outerHTML,
           label: ops.map((o) => o.label).filter(Boolean).join('，').slice(0, 200),
-          block: last.target || last.args?.id, slide_id: target?.closest('section.slide')?.id || last.args?.slideId }) });
+          block: pageId ? null : last.target || last.args?.id, slide_id: pageId || target?.closest('section.slide')?.id || last.args?.slideId }) });
       if (r.status === 409) { replayPending = true; return; }
       if (!r.ok) throw new Error(String(r.status));
       version = (await r.json()).version;

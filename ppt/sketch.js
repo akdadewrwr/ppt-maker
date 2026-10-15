@@ -35,7 +35,27 @@
     }
     return `${d}L${f(p[p.length - 1])}`;
   }
-  const noteSize = (text) => ({ w: [...text].reduce((s, c) => s + (c.charCodeAt(0) > 255 ? 20 : 11), 0) + 12, h: 28 });
+  let measurer = null;
+  function noteSize(text) { // the real glyph width at the note font, so the backing, eraser box and rect fit the text
+    if (!measurer) { measurer = document.createElement('canvas').getContext('2d'); measurer.font = NOTE_FONT; }
+    return { w: Math.ceil(measurer.measureText(text).width) + 12, h: 28 };
+  }
+  const num = (v, max) => Math.min(max, Math.max(0, Number.isFinite(+v) ? +v : 0));
+  function cleanDraft(d) { // a draft comes back from localStorage: trust nothing in it, rebuild what is drawn
+    if (!Array.isArray(d)) return [];
+    const out = [];
+    for (const i of d) {
+      if (!i || typeof i !== 'object') continue;
+      const color = COLORS.includes(i.color) ? i.color : COLORS[0];
+      if (i.type === 'stroke' && Array.isArray(i.pts)) {
+        const pts = i.pts.filter(Array.isArray).map(([x, y]) => [num(x, W), num(y, H)]);
+        if (pts.length) out.push({ type: 'stroke', color, width: WIDTHS.some(([w]) => w === +i.width) ? +i.width : 4, pts, d: smoothPath(pts) });
+      } else if (i.type === 'note' && typeof i.text === 'string' && i.text.trim()) {
+        out.push({ type: 'note', color, x: num(i.x, W), y: num(i.y, H), text: [...i.text].slice(0, 200).join('') });
+      }
+    }
+    return out;
+  }
   function bounds(items, pad, clamp) {
     if (!items.length) return null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -61,7 +81,7 @@
     const pad = Math.max(0, ...items.map((i) => i.width || 0)) / 2 + 4, b = bounds(items, pad, false);
     const body = items.map((i) => (i.type === 'stroke'
       ? `<path d="${smoothPath(i.pts.map(([x, y]) => [x - b.x, y - b.y]))}" fill="none" stroke="${esc(i.color)}" stroke-width="${i.width}" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
-      : `<text x="${n1(i.x - b.x + 6)}" y="${n1(i.y - b.y + 20)}" font-size="20" fill="${esc(i.color)}">${esc(i.text)}</text>`)).join('');
+      : `<text x="${n1(i.x - b.x + 6)}" y="${n1(i.y - b.y + 20)}" font-size="20" font-family='"Microsoft YaHei", "PingFang SC", sans-serif' fill="${esc(i.color)}">${esc(i.text)}</text>`)).join('');
     return { geom: { x: b.x, y: b.y, w: b.w, h: b.h }, html: `<svg viewBox="0 0 ${b.w} ${b.h}" preserveAspectRatio="none">${body}</svg>` };
   }
   function drawOnCanvas(ctx, items, k = 1) { // burn a sketch into a slide screenshot; k = canvas px per canvas unit
@@ -81,11 +101,11 @@
     if (i.type === 'stroke') return `<path d="${i.d}" fill="none" stroke="${esc(i.color)}" stroke-width="${i.width}" stroke-linecap="round" stroke-linejoin="round"/>`;
     const s = noteSize(i.text);
     return `<g><rect x="${i.x}" y="${i.y}" width="${s.w}" height="${s.h}" rx="4" fill="#fff" fill-opacity=".85"/>`
-      + `<text x="${i.x + 6}" y="${i.y + 20}" font-size="20" font-family='"Microsoft YaHei", sans-serif' fill="${esc(i.color)}">${esc(i.text)}</text></g>`;
+      + `<text x="${i.x + 6}" y="${i.y + 20}" font-size="20" font-family='"Microsoft YaHei", "PingFang SC", sans-serif' fill="${esc(i.color)}">${esc(i.text)}</text></g>`;
   }
   function open(slide, cb) {
     const G = window.PPTGeom, ui = document.getElementById('ppt-ui'), key = `ppt-sketch:${slide.id}`;
-    let items = cb.ls.get(key, []), mode = 'pen', color = COLORS[0], width = 4, cur = null, note = null;
+    let items = cleanDraft(cb.ls.get(key, [])), mode = 'pen', color = COLORS[0], width = 4, cur = null, note = null;
     const undo = [];
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('class', 'ppt-abs ppt-sketch'); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -194,5 +214,5 @@
     return { slide, close };
   }
 
-  window.PPTSketch = { COLORS, WIDTHS, esc, simplify, smoothPath, noteSize, bounds, hitItem, inkSVG, drawOnCanvas, open };
+  window.PPTSketch = { COLORS, WIDTHS, esc, simplify, smoothPath, noteSize, cleanDraft, bounds, hitItem, inkSVG, drawOnCanvas, open };
 })();

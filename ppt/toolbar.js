@@ -50,6 +50,8 @@
     file.addEventListener('change', () => { if (file.files[0]) cb.addImage(file.files[0]); file.value = ''; });
     btn(top, '+图片', '插入图片（也可以粘贴或拖进幻灯片）', () => file.click());
     const iconBtn = btn(top, '+图标', '插入图标', () => openIcons(iconBtn));
+    btn(top, '✎ 草图', '在当前页上画草图', () => cb.sketch());
+    btn(top, '+草图页', '插入空白页并画草图', () => cb.addSketchSlide());
     sep(top);
     btn(top, '+页', '在当前页之后插入空白页', () => cb.addSlide());
     const delSlide = btn(top, '−页', '删除当前页', () => cb.removeSlide());
@@ -156,6 +158,10 @@
     b = mkBar('icon');
     colorBtn(b, 'A', '颜色', (c) => cb.blockStyle({ color: c }));
     pick(b, '线宽', [1, 1.5, 2, 2.5, 3], (v) => `${v}`, (v) => cb.blockStyle({ 'stroke-width': v }));
+    tail(b, true);
+    b = mkBar('ink');
+    colorBtn(b, 'A', '颜色', (c) => cb.inkColor(c));
+    opacity(b);
     tail(b, true);
     b = mkBar('image');
     pick(b, '圆角', [0, 8, 16, 24, '50%'], (v) => (v === '50%' ? '圆形' : `${v}px`), (v) => cb.blockStyle({ 'border-radius': v === '50%' ? v : +v ? `${v}px` : null }));

@@ -451,6 +451,62 @@ try {
   b6 = await byTitle('插入图标'); await click(b6.x, b6.y); await sleep(300);
   await key('Escape', 'Escape', 27); await sleep(200);
   check('M7 Escape closes the icon panel from its search box', (await ev(`document.querySelector('.ppt-icons').hidden`)) === true);
+  // ---- 3: sketch ----
+  await open(url); await ev(`scrollTo(0, 0)`); await sleep(300);
+  let b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(300);
+  check('K sketch mode overlays the current slide', ((await ev(`document.querySelector('.ppt-sketch')?.getBoundingClientRect().width`)) || 0) > 100);
+  const ks = await ev(`(() => { const r = document.getElementById('s-cover').getBoundingClientRect(); return {l: r.left, t: r.top, k: r.width / 1280}; })()`);
+  const P = (x, y) => [ks.l + x * ks.k, ks.t + y * ks.k];
+  const counts = () => ev(`[document.querySelectorAll('.ppt-sketch path').length, document.querySelectorAll('.ppt-sketch text').length].join()`);
+  await drag(...P(100, 100), ...P(400, 100)); await drag(...P(100, 200), ...P(1300, 320)); // the second runs off the slide
+  b8 = await byTitle('T 标注'); await click(b8.x, b8.y); await click(...P(500, 150)); await sleep(200);
+  await type('不要'); await key('Escape', 'Escape', 27); await sleep(200);
+  check('K Esc in the note box only cancels the note', (await counts()) === '2,0' && !!(await ev(`document.querySelector('.ppt-sketch')`)), await counts());
+  await click(...P(500, 150)); await sleep(200); await type('标题<1>'); await enter(); await sleep(200);
+  check('K two strokes and a note, shown as text', (await counts()) === '2,1' && (await ev(`document.querySelector('.ppt-sketch text')?.textContent`)) === '标题<1>', await counts());
+  await key('Delete', 'Delete', 46); await key('z', 'KeyZ', 90, 2); await sleep(1500);
+  check('K deck keys are inert while sketching', (await counts()) === '2,1' && !!(await ev(`document.querySelector('.ppt-sketch')`)));
+  b8 = await byTitle('撤销上一笔'); await click(b8.x, b8.y); await sleep(200);
+  check('K ↶ removes the last item', (await counts()) === '2,0');
+  b8 = await byTitle('T 标注'); await click(b8.x, b8.y); await click(...P(500, 150)); await sleep(200); await type('标题<1>'); await enter(); await sleep(200);
+  b8 = await byTitle('橡皮'); await click(b8.x, b8.y); await click(...P(250, 101)); await sleep(200);
+  check('K eraser removes the stroke it touches', (await counts()) === '1,1', await counts());
+  await ev(`window.__marker = 1`);
+  fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace('<title>', '<title>K')); await sleep(2500);
+  check('K no reload while sketching', (await ev(`window.__marker`)) === 1);
+  await key('Escape', 'Escape', 27); await sleep(2500);
+  check('K Esc leaves sketch mode, then the page reloads', (await ev(`window.__marker`)) === undefined && !(await ev(`document.querySelector('.ppt-sketch')`)));
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(300);
+  check('K the draft comes back', (await counts()) === '1,1');
+  b8 = await byTitle('把草图发给 Claude'); await click(b8.x, b8.y); await sleep(300);
+  await key('Escape', 'Escape', 27); await sleep(200);
+  check('K Esc in the send box keeps the sketch', !(await ev(`document.querySelector('.ppt-pop')`)) && (await counts()) === '1,1');
+  b8 = await byTitle('把草图发给 Claude'); await click(b8.x, b8.y); await sleep(300); await enter(); await sleep(3000);
+  const ke = inbox().filter((e) => e.type === 'intent').at(-1);
+  check('K send: sketch intent with shot, notes and the default text', ke?.kind === 'sketch' && ke.text === '按草图修改这一页' && JSON.stringify(ke.notes) === '["标题<1>"]' && ke.slide_id === 's-cover' && !!ke.shot
+    && ke.rect.x + ke.rect.w <= 1280, JSON.stringify({ ...ke, shot: !!ke?.shot }));
+  const shotPng = ke?.shot && fs.readFileSync(path.join(DECK, ke.shot));
+  check('K the shot is the whole slide', !!shotPng && shotPng.readUInt32BE(16) === 1280 && shotPng.readUInt32BE(20) === 720);
+  const leftMode = !(await ev(`document.querySelector('.ppt-sketch')`));
+  b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(300);
+  check('K sending leaves sketch mode and clears the draft', leftMode && (await counts()) === '0,0');
+  b8 = await byTitle('把草图发给 Claude'); await click(b8.x, b8.y); await sleep(300);
+  check('K an empty sketch is not sent', ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('还没有画内容') && !(await ev(`document.querySelector('.ppt-pop')`)));
+  await drag(...P(600, 500), ...P(800, 560)); await sleep(200);
+  b8 = await byTitle('把草图留在幻灯片上'); await click(b8.x, b8.y); await sleep(2500);
+  const inkHtml = () => (deckHtml().match(/<div class="obj" id="o-[0-9a-z]{6}" data-kind="ink"[\s\S]*?<\/div>/) || [''])[0];
+  check('K keep: an ink object is saved and selected', /data-kind="ink" style="left: \d+px;[^"]*"><svg viewBox="0 0 \d+ \d+" preserveAspectRatio="none"><path d="M[^"]+" fill="none" stroke="#ef4444" stroke-width="4"[^>]*vector-effect="non-scaling-stroke"/.test(inkHtml())
+    && !!(await byTitle('颜色')) && !(await ev(`document.querySelector('.ppt-sketch')`)), inkHtml().slice(0, 200));
+  b8 = await byTitle('颜色'); await click(b8.x, b8.y); await sleep(200);
+  b8 = await byTitle('#2563eb'); await click(b8.x, b8.y); await sleep(2000);
+  check('K ink colour changes every stroke', inkHtml().includes('#2563eb') && !inkHtml().includes('#ef4444'));
+  await key('z', 'KeyZ', 90, 2); await sleep(3000);
+  check('K undo restores the ink colour', inkHtml().includes('#ef4444'));
+  const ns0 = nSlides();
+  b8 = await byTitle('插入空白页并画草图'); await click(b8.x, b8.y); await sleep(2500);
+  check('K +草图页 adds a blank slide and opens sketch mode on it', nSlides() === ns0 + 1 && !!(await ev(`document.querySelector('.ppt-sketch')`)));
+  await key('Escape', 'Escape', 27); await sleep(500);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

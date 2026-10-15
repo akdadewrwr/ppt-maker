@@ -68,5 +68,121 @@
     ctx.restore();
   }
 
-  window.PPTSketch = { COLORS, WIDTHS, esc, simplify, smoothPath, noteSize, bounds, hitItem, inkSVG, drawOnCanvas };
+  // ---- sketch mode: one transparent SVG board over one slide ----
+  const NS = 'http://www.w3.org/2000/svg';
+  function itemSVG(i) {
+    if (i.type === 'stroke') return `<path d="${i.d}" fill="none" stroke="${esc(i.color)}" stroke-width="${i.width}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    const s = noteSize(i.text);
+    return `<g><rect x="${i.x}" y="${i.y}" width="${s.w}" height="${s.h}" rx="4" fill="#fff" fill-opacity=".85"/>`
+      + `<text x="${i.x + 6}" y="${i.y + 20}" font-size="20" font-family='"Microsoft YaHei", sans-serif' fill="${esc(i.color)}">${esc(i.text)}</text></g>`;
+  }
+  function open(slide, cb) {
+    const G = window.PPTGeom, ui = document.getElementById('ppt-ui'), key = `ppt-sketch:${slide.id}`;
+    let items = cb.ls.get(key, []), mode = 'pen', color = COLORS[0], width = 4, cur = null, note = null;
+    const undo = [];
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'ppt-abs ppt-sketch'); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const live = document.createElementNS(NS, 'path');
+    ui.appendChild(svg);
+    const bar = document.createElement('div'); bar.className = 'ppt-abs ppt-bar ppt-sketchbar'; ui.appendChild(bar);
+    const btn = (label, title, fn, cls = '') => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = `ppt-btn ${cls}`; b.textContent = label; b.title = title;
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', fn); bar.appendChild(b); return b;
+    };
+    const sep = () => { const s = document.createElement('span'); s.className = 'ppt-sep'; bar.appendChild(s); };
+    const modeBtns = { pen: btn('✎', '画笔', () => setMode('pen')) };
+    const swatches = COLORS.map((c) => { const b = btn('', c, () => { color = c; if (mode === 'erase') mode = 'pen'; paint(); }, 'ppt-swatch'); b.style.background = c; return b; });
+    const size = document.createElement('select'); size.title = '粗细';
+    WIDTHS.forEach(([w, l]) => { const o = document.createElement('option'); o.value = w; o.textContent = l; size.appendChild(o); });
+    size.value = String(width); size.addEventListener('change', () => { width = +size.value; }); bar.appendChild(size);
+    modeBtns.erase = btn('⌫', '橡皮（点一下删掉一笔）', () => setMode('erase'));
+    modeBtns.note = btn('T', 'T 标注', () => setMode('note'));
+    btn('↶', '撤销上一笔', () => { if (undo.length) { items = undo.pop(); saved(); } });
+    btn('清空', '清空草图', () => change([]));
+    sep();
+    btn('发给 Claude', '把草图发给 Claude', () => (items.length ? cb.send(items) : cb.toast('还没有画内容')), 'ppt-ask');
+    btn('保留为笔迹', '把草图留在幻灯片上', () => (items.length ? cb.keep(items) : cb.toast('还没有画内容')));
+    btn('取消', '退出草图（草稿会保留）', () => close(false));
+
+    function setMode(m) { mode = m; paint(); }
+    function paint() {
+      Object.entries(modeBtns).forEach(([m, b]) => b.classList.toggle('on', m === mode));
+      swatches.forEach((b, i) => b.classList.toggle('on', COLORS[i] === color));
+      svg.dataset.mode = mode;
+    }
+    function render() { svg.innerHTML = items.map(itemSVG).join(''); if (cur) svg.appendChild(live); }
+    function saved() { render(); cb.ls.set(key, items); }
+    function change(next) { undo.push(items); items = next; saved(); }
+    function position() {
+      const r = slide.getBoundingClientRect(), bh = bar.offsetHeight || 36;
+      cb.place(svg, { left: r.left, top: r.top, width: r.width, height: r.height });
+      cb.place(bar, { left: Math.max(8, r.left), top: Math.max(56, Math.min(r.top - bh - 8, r.bottom - bh - 8)) });
+      if (note) { const p = G.slideToClient(r, { x: note.p.x, y: note.p.y, w: 0, h: 0 }); cb.place(note.el, { left: p.left, top: p.top }); }
+    }
+    const pt = (e) => G.clientToSlide(slide.getBoundingClientRect(), e.clientX, e.clientY, e.clientX, e.clientY);
+    const line = () => live.setAttribute('d', `M${cur.map(([x, y]) => `${x} ${y}`).join('L')}`);
+    svg.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const p = pt(e);
+      if (mode === 'erase') { const n = hitItem(items, p.x, p.y); if (n >= 0) change(items.filter((_, k) => k !== n)); return; }
+      if (mode === 'note') return openNote(p);
+      svg.setPointerCapture(e.pointerId);
+      cur = [[p.x, p.y]];
+      for (const [k, v] of [['fill', 'none'], ['stroke', color], ['stroke-width', width], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round']]) live.setAttribute(k, v);
+      line(); svg.appendChild(live);
+    });
+    svg.addEventListener('pointermove', (e) => {
+      if (!cur) return;
+      const p = pt(e), [lx, ly] = cur[cur.length - 1];
+      if (Math.hypot(p.x - lx, p.y - ly) < 2) return;
+      cur.push([p.x, p.y]); line();
+    });
+    const lift = () => {
+      if (!cur) return;
+      const pts = simplify(cur).map(([x, y]) => [n1(x), n1(y)]);
+      cur = null;
+      change([...items, { type: 'stroke', color, width, pts, d: smoothPath(pts) }]);
+    };
+    svg.addEventListener('pointerup', lift);
+    svg.addEventListener('pointercancel', lift);
+    function openNote(p) {
+      endNote(false);
+      const el = document.createElement('input'); el.className = 'ppt-abs ppt-note-input'; el.placeholder = '输入标注，Enter 确定 · Esc 放弃';
+      ui.appendChild(el); note = { el, p }; position();
+      el.addEventListener('keydown', (k) => {
+        if (k.key === 'Enter') { k.preventDefault(); endNote(true); }
+        else if (k.key === 'Escape') { k.preventDefault(); endNote(false); }
+      });
+      el.addEventListener('blur', () => endNote(true));
+      setTimeout(() => el.focus());
+    }
+    function endNote(keep) {
+      if (!note) return;
+      const { el, p } = note, text = el.value.trim().slice(0, 200);
+      note = null; el.remove();
+      if (keep && text) change([...items, { type: 'note', color, x: p.x, y: p.y, text }]);
+    }
+    const onKey = (e) => { // capture phase: Esc leaves sketch mode, except inside the note box or the send box
+      if (e.key !== 'Escape' || (note && e.target === note.el) || e.target.closest?.('.ppt-pop')) return;
+      e.stopPropagation(); close(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    addEventListener('scroll', position, { passive: true });
+    addEventListener('resize', position);
+    function close(discard) {
+      endNote(false);
+      document.removeEventListener('keydown', onKey, true);
+      removeEventListener('scroll', position);
+      removeEventListener('resize', position);
+      svg.remove(); bar.remove();
+      if (discard) cb.ls.set(key, []);
+      cb.onClose();
+    }
+    paint(); render(); position();
+    return { slide, close };
+  }
+
+  window.PPTSketch = { COLORS, WIDTHS, esc, simplify, smoothPath, noteSize, bounds, hitItem, inkSVG, drawOnCanvas, open };
 })();

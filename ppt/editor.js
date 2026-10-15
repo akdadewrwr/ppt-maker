@@ -5,6 +5,7 @@
   let version = window.PPT.version, saving = false, editing = null, drag = null, pop = null, lastKey = '';
   let replayPending = false; // a save failed offline: reload+replay once the server is back
   let armed = null; // shape kind waiting to be drawn
+  let sketch = null; // open sketch-mode controller (PPTSketch.open)
   let lastSave = Promise.resolve();
   const api = (p) => `${p}?t=${encodeURIComponent(TOKEN)}`;
   const slides = () => [...document.querySelectorAll('section.slide')];
@@ -59,6 +60,12 @@
     armShape(shape) { select(null); armed = shape; document.documentElement.classList.add('ppt-armed'); },
     addImage: (f) => addImage(f, null),
     addIcon, drawIcon,
+    sketch: () => openSketch(currentSlide()), addSketchSlide,
+    inkColor(c) {
+      if (!c || !isObj(selected)) return;
+      rememberColor(c);
+      commit({ op: 'setInkColor', target: selected.id, args: { color: c }, label: `笔迹颜色 ${c} ${selected.id}` });
+    },
     textStyle, blockStyle, toggle, border, toggleShadow,
     remove() { if (!selected) return; const id = selected.id; select(null); commit({ op: 'remove', target: id, label: `删除 ${id}` }); },
     ask: askSelected,
@@ -119,7 +126,7 @@
     if (selected) blockStyle({ 'box-shadow': selected.style.boxShadow ? null : '0 4px 16px rgba(0,0,0,.15)' });
   }
   // ---- inserting objects ----
-  const KIND_ZH = { shape: '形状', arrow: '箭头', icon: '图标', image: '图片' };
+  const KIND_ZH = { shape: '形状', arrow: '箭头', icon: '图标', image: '图片', ink: '笔迹' };
   const LINES = new Set(['line', 'arrow', 'arrow2']);
   function disarm() { armed = null; document.documentElement.classList.remove('ppt-armed'); }
   function addObj(slide, args) {
@@ -164,6 +171,41 @@
     const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
     const cx = at ? at.x : G.W / 2, cy = at ? at.y : G.H / 2, inside = (v, size, max) => Math.round(Math.min(Math.max(v - size / 2, 0), Math.max(0, max - size)));
     addObj(at?.slide || currentSlide(), { kind: 'image', geom: { x: inside(cx, w, G.W), y: inside(cy, h, G.H), w, h }, html: `<img src="${src}" alt="">` });
+  }
+  // ---- sketch mode: freehand over one slide, then send it to Claude or keep it as ink ----
+  function openSketch(slide) {
+    if (sketch || !slide) return;
+    if (editing) endEdit();
+    closePop(); disarm(); select(null);
+    sketch = PPTSketch.open(slide, { place, ls, toast, onClose: () => { sketch = null; closePop(); },
+      send: (items) => sendSketch(slide, items), keep: (items) => keepSketch(slide, items) });
+  }
+  function addSketchSlide() {
+    const s = currentSlide(), id = O.newId(document, 's-');
+    commit({ op: 'insertSlide', args: { id, afterId: s.id }, label: `插入草图页 ${id}` });
+    const n = document.getElementById(id);
+    if (!n) return;
+    n.scrollIntoView({ block: 'center' });
+    openSketch(n);
+  }
+  function sendSketch(slide, items) {
+    const r = PPTSketch.bounds(items, 8, true), notes = items.filter((i) => i.type === 'note').map((i) => i.text);
+    openPop(slide, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(slide) + 1} 页 · 草图`, async (text) => {
+      sketch?.close(true);
+      let shot = null;
+      try { // the whole slide, sketch burnt on top: Claude needs the surroundings too
+        const c = await htmlToImage.toCanvas(slide, { width: G.W, height: G.H, pixelRatio: 1, style: { zoom: '1', margin: '0' } });
+        PPTSketch.drawOnCanvas(c.getContext('2d'), items, c.width / G.W);
+        shot = c.toDataURL('image/png');
+      } catch (err) { console.warn('[ppt] sketch screenshot failed', err); }
+      enqueue({ type: 'intent', kind: 'sketch', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
+                cells: G.rectToCells(r), blocks: G.hitBlocks(slide, r), text, notes, shot });
+    }, '按草图修改这一页');
+  }
+  function keepSketch(slide, items) {
+    const { geom, html } = PPTSketch.inkSVG(items);
+    sketch?.close(true);
+    addObj(slide, { kind: 'ink', geom, html });
   }
   function setZ(dir) {
     if (!isObj(selected)) return;
@@ -227,7 +269,7 @@
       const r = await fetch(api('/api/state'), { cache: 'no-store' });
       if (!r.ok) throw new Error(String(r.status));
       state = await r.json(); offline = false; online = state.online;
-      const typing = drag || pop || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t.value.trim() || t === document.activeElement));
+      const typing = drag || pop || sketch || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t.value.trim() || t === document.activeElement));
       if (!editing && !saving && !typing && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing
       flush();
     } catch { offline = true; }
@@ -284,7 +326,7 @@
   // ---- select an area (drag) or a block (click) -> intent popup ----
   function closePop() { if (pop) { pop.box.remove(); pop.node.remove(); pop = null; } }
   document.addEventListener('mousedown', (e) => {
-    if (e.button !== 0 || e.target.closest('#ppt-ui')) return;
+    if (e.button !== 0 || sketch || e.target.closest('#ppt-ui')) return;
     if (editing) {
       if (!editing.block.contains(e.target) && document.activeElement !== editing.block) endEdit(); // focus went to a toolbar control earlier
       return;
@@ -345,7 +387,7 @@
     openPop(d.slide, r, d.box, `第 ${slides().indexOf(d.slide) + 1} 页 · 网格 ${G.rectToCells(r)}`, (text) => submitIntent(d.slide, r, text));
   });
 
-  function openPop(slide, r, box, label, onSend) {
+  function openPop(slide, r, box, label, onSend, fallback = '') {
     const cr = G.slideToClient(slide.getBoundingClientRect(), r);
     place(box, cr);
     const node = el('div', 'ppt-abs ppt-pop', ui);
@@ -358,7 +400,7 @@
       if (k.key === 'Escape') return closePop();
       if (k.key !== 'Enter' || k.shiftKey) return;
       k.preventDefault();
-      const text = ta.value.trim();
+      const text = ta.value.trim() || fallback;
       if (!text) return;
       closePop();
       onSend(text);
@@ -420,6 +462,7 @@
     } catch { offline = true; render(); }
   }
   document.addEventListener('keydown', (e) => {
+    if (sketch) return; // the sketch board owns the keyboard
     if (editing) { if (e.key === 'Escape') endEdit(); return; } // typing and its own undo belong to the browser; Escape works even from a toolbar control
     if (e.target.closest?.('#ppt-ui') && /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName)) return;
     const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
@@ -451,7 +494,7 @@
 
   // ---- direct text editing (double-click a leaf block, or a shape: its centred text area) ----
   document.addEventListener('dblclick', (e) => {
-    if (editing) return;
+    if (editing || sketch) return;
     const o = e.target.closest('section.slide .obj[data-kind="shape"]');
     if (o && o.id) return startEdit(o.querySelector(':scope > .obj-text') || el('div', 'obj-text', o), o);
     const b = e.target.closest('section.slide .block');

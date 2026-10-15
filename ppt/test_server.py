@@ -7,6 +7,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
 import kb
+import importer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import build_icons
@@ -915,6 +916,99 @@ class BatchTests(ServerCase):
         self.assertEqual((ev["e1-2"]["slide_id"], ev["e1-2"]["reply"]), ("s-2", None))
         self.assertNotIn("e1", ev)
         self.assertEqual(ev["e2"]["re"], "e1-1")
+
+
+REVEAL = '<html><body><div class="reveal"><div class="slides"><section><h1>导入测试</h1></section><section>二</section></div></div><script>window.x=1</script></body></html>'
+
+
+class ImporterTests(ServerCase):
+    def save(self, data, name):
+        return importer.save(self.deck, io.BytesIO(data), len(data), name)
+
+    def test_hint(self):
+        self.assertEqual(importer.hint(TEMPLATE.read_text(encoding="utf-8")), "ppt-maker")
+        self.assertEqual(importer.hint(REVEAL), "slides")
+        self.assertEqual(importer.hint("<section>a</section>" * 3), "slides")
+        self.assertEqual(importer.hint("<article><h1>报告</h1><p>正文</p></article>"), "page")
+
+    def test_save_html_and_zip(self):
+        iid, d, entry = self.save(REVEAL.encode(), "../旧稿.html")
+        self.assertRegex(iid, r"^i-[0-9a-z]{6}$")
+        self.assertEqual((d, entry.name, entry.read_text(encoding="utf-8")), (self.deck / "imports" / iid, "旧稿.html", REVEAL))
+        z = zip_bytes({"deep/a/page.html": "<p>x</p>", "site/index.html": "<h1>首页</h1>", "site/img/a.png": b"\x89PNG", "site/about.html": "<p>y</p>"})
+        _, d2, entry2 = self.save(z, "site.zip")
+        self.assertEqual(entry2.relative_to(d2).as_posix(), "site/index.html")
+        self.assertTrue((d2 / "site" / "img" / "a.png").is_file())
+        self.assertFalse(any(p.suffix == ".zip" for p in d2.iterdir()))
+
+    def test_unsafe_or_empty_zips_are_refused(self):
+        for files in ({"../evil.html": "x"}, {"/abs.html": "x"}, {"C:/win.html": "x"}, {"a.txt": "no html here"}):
+            with self.assertRaises(ValueError, msg=files):
+                self.save(zip_bytes(files), "x.zip")
+        with mock.patch.object(importer, "MAX_FILES", 2):
+            with self.assertRaises(ValueError):
+                self.save(zip_bytes({"a.html": "1", "b.html": "2", "c.html": "3"}), "x.zip")
+        with self.assertRaises(ValueError):
+            self.save(b"<p>x</p>", "x.exe")
+        self.assertEqual(list((self.deck / "imports").iterdir()), [])  # nothing half-imported is left behind
+        self.assertFalse((self.tmp / "evil.html").exists())
+
+    def test_zip_bomb_stops_at_the_real_size(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("index.html", "<p>" + "x" * 5000 + "</p>")
+        with mock.patch.object(importer, "MAX_IMPORT", 1000):
+            with self.assertRaises(ValueError):
+                self.save(buf.getvalue(), "bomb.zip")
+
+    def up(self, data, name, mode="append", token="tok"):
+        return post_raw(self.port, f"/api/import?t={token}&mode={mode}&name={quote(name)}", data, "text/html")
+
+    def test_import_endpoint_and_event(self):
+        s, b = self.up(REVEAL.encode(), "旧稿.html")
+        self.assertEqual(s, 200)
+        e = inbox(self.deck)[-1]
+        self.assertEqual((e["id"], e["type"], e["kind"], e["mode"], e["hint"]), (json.loads(b)["id"], "import", "file", "append", "slides"))
+        self.assertTrue(Path(e["source"]).is_file())
+        self.assertEqual(e["original"], f"/imports/{e['import_id']}/旧稿.html")
+        self.assertIn(" import kind:file ", server.summary(e))
+        for args, code in (((b"x" * 1000, "a.html", "sideways"), 400), ((b"x" * 1000, "a.exe"), 400), ((b"x" * 1000, "a.html", "append", "bad"), 403)):
+            self.assertEqual(self.up(*args)[0], code, args)
+        with mock.patch.object(importer, "MAX_IMPORT", 16):
+            self.assertEqual(self.up(b"x" * 1000, "a.html")[0], 413)
+
+    def test_original_is_sandboxed(self):
+        self.up(REVEAL.encode(), "旧稿.html")
+        e = inbox(self.deck)[-1]
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", quote(e["original"]), headers={"Host": f"127.0.0.1:{self.port}"})
+        r = c.getresponse()
+        body = r.read().decode()
+        c.close()
+        self.assertEqual((r.status, r.getheader("Content-Security-Policy")), (200, "sandbox"))
+        self.assertIn("导入测试", body)
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", "/?t=tok", headers={"Host": f"127.0.0.1:{self.port}"})
+        self.assertIsNone(c.getresponse().getheader("Content-Security-Policy"))
+        c.close()
+
+    def test_url_import_state_and_cli(self):
+        def post(body):
+            return post_raw(self.port, "/api/import/url?t=tok", json.dumps(body).encode(), "application/json")[0]
+        self.assertEqual(post({"url": "ftp://x.com", "mode": "append"}), 400)
+        self.assertEqual(post({"url": "https://example.com/a", "mode": "replace"}), 200)
+        e = inbox(self.deck)[-1]
+        self.assertEqual((e["type"], e["kind"], e["mode"], e["source"]), ("import", "url", "replace", "https://example.com/a"))
+        server.reply(self.deck, e["id"], "导入了 3 页")
+        st = {x["id"]: x for x in json.loads(self.req("GET", "/api/state?t=tok")[1])["events"]}
+        self.assertEqual((st[e["id"]]["type"], st[e["id"]]["status"], st[e["id"]]["reply"]), ("import", "done", "导入了 3 页"))
+        src = self.tmp / "旧.html"
+        src.write_text(REVEAL, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            server.main(["--import", str(self.deck), str(src), "replace"])
+        e2 = inbox(self.deck)[-1]
+        self.assertEqual((e2["type"], e2["mode"], e2["hint"]), ("import", "replace", "slides"))
+        self.assertIn(e2["id"], out.getvalue())
 
 
 class CliTests(ServerCase):

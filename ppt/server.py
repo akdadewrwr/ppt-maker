@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import importer
 import kb
 
 HERE = Path(__file__).resolve().parent
@@ -21,8 +22,9 @@ MAX_TEXT = 4000
 MAX_NOTES = 50
 MAX_NOTE = 200
 MAX_ITEMS = 30  # intents in one batch
+STREAMED = ("/api/kb/file", "/api/import")  # uploads written to disk as they arrive
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
-REPLY_TYPES = EVENT_TYPES | {"kb"}  # kb events are written by the server, not posted by the page
+REPLY_TYPES = EVENT_TYPES | {"kb", "import"}  # kb events are written by the server, not posted by the page
 FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
                "blocks": list, "text": str, "issues": list, "quote": dict, "notes": list, "kb": list, "items": list}
 HEARTBEAT_SECS = 10
@@ -213,6 +215,8 @@ def state(deck):
             re_ = e.get("re")
             events.append({"id": e["id"], "type": t, "re": f"{re_}-1" if re_ in batches else re_, "slide_id": e.get("slide_id"),
                            "rect": e.get("rect"), "text": e.get("text", ""), "status": status, "reply": reply})
+        elif t == "import":
+            events.append({"id": e["id"], "type": "import", "status": status, "reply": reply, "original": e.get("original")})
     return {"version": deck_version(deck),
             "online": hb.exists() and time.time() - hb.stat().st_mtime < ONLINE_SECS,
             "events": events}
@@ -371,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send(self, code, body=b"", ctype="application/json; charset=utf-8"):
+    def send(self, code, body=b"", ctype="application/json; charset=utf-8", headers=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False).encode()
         elif isinstance(body, str):
@@ -381,6 +385,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")  # an uploaded image must never be sniffed into a page
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -391,7 +397,7 @@ class Handler(BaseHTTPRequestHandler):
             # read the body before any reply: closing with unread bytes makes Windows reset the
             # socket, and the client never sees our 403/404
             n = int(self.headers.get("Content-Length") or 0)
-            if urlparse(self.path).path == "/api/kb/file":  # streamed to disk by the handler, after the checks below
+            if self.command == "POST" and urlparse(self.path).path in STREAMED:  # streamed to disk by the handler, after the checks below
                 self.body, self.too_large, self.stream_len = b"", False, n
             else:
                 self.too_large = n > MAX_BODY
@@ -416,6 +422,37 @@ class Handler(BaseHTTPRequestHandler):
         if self.stream_len and self.stream_len <= DRAIN_MAX:
             drain(self.rfile, self.stream_len)
         self.stream_len = 0
+
+    def import_post(self, url):
+        deck, q = self.server.deck, parse_qs(url.query)
+        try:
+            if url.path == "/api/import":
+                mode, name = q.get("mode", [""])[0], q.get("name", [""])[0]
+                if self.stream_len > importer.MAX_IMPORT:
+                    self.discard_stream()
+                    return self.send(413, {"error": "文件超过 50MB"})
+                try:
+                    if mode not in importer.MODES:
+                        raise ValueError("bad mode")
+                    importer.check_name(name)
+                except ValueError:
+                    self.discard_stream()
+                    raise
+                iid, d, entry = importer.save(deck, self.rfile, self.stream_len, name)  # outside LOCK: may be big
+                self.stream_len = 0
+                fields = importer.event(deck, iid, d, entry, mode)
+            else:
+                body = self.read_json()
+                if not isinstance(body, dict) or body.get("mode") not in importer.MODES:
+                    raise ValueError("bad body")
+                fields = importer.url_event(body.get("url", ""), body["mode"])
+            with LOCK:
+                ev = add_event(deck, fields)
+            return self.send(200, {"id": ev["id"]})
+        except ValueError as e:
+            return self.send(400, {"error": str(e)})
+        except OSError as e:
+            return self.send(503, {"error": f"导入时写不进磁盘：{e}"})
 
     def kb_post(self, url):
         deck, q = self.server.deck, parse_qs(url.query)
@@ -506,7 +543,9 @@ class Handler(BaseHTTPRequestHandler):
             root, f = deck, safe_path(deck, path)
         if not f or (root == deck and ".ppt" in f.relative_to(deck.resolve()).parts):
             return self.send(404, {"error": "not found"})
-        self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+        rel = f.relative_to(deck.resolve()).parts if root == deck else ()
+        sandbox = {"Content-Security-Policy": "sandbox"} if rel[:1] == ("imports",) else None  # imported pages never run as us
+        self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream", sandbox)
 
     def read_json(self):
         if self.too_large:
@@ -517,6 +556,8 @@ class Handler(BaseHTTPRequestHandler):
         url = self.guard(need_token=True)
         if not url:
             return
+        if url.path in ("/api/import", "/api/import/url"):
+            return self.import_post(url)
         if url.path.startswith("/api/kb/"):
             return self.kb_post(url)
         if url.path == "/api/asset":
@@ -622,6 +663,7 @@ def main(argv=None):
     ap.add_argument("--reply", action="store_true", help="write a reply: <deck> <event_id> [text]")
     ap.add_argument("--ack", action="store_true", help="with --reply: mark the event as being processed")
     ap.add_argument("--kb-done", action="store_true", help="mark a kb item digested: <deck> <scope> <id> <title> <summary>")
+    ap.add_argument("--import", dest="import_src", action="store_true", help="import html: <deck> <path-or-url> [append|replace]")
     ap.add_argument("--kb-add", action="store_true", help="add to a kb: <deck> <scope> <file|web|ref> <path-or-url> [kind]")
     ap.add_argument("--kb-fail", action="store_true", help="mark a kb item failed: <deck> <scope> <id> <reason>")
     a = ap.parse_args(argv)
@@ -630,6 +672,19 @@ def main(argv=None):
         ap.error(f"{deck / 'deck.html'} not found")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if a.import_src:
+        if not a.rest or (len(a.rest) > 1 and a.rest[1] not in importer.MODES):
+            ap.error("--import needs <path-or-url> [append|replace]")
+        src, mode = a.rest[0], (a.rest[1] if len(a.rest) > 1 else "append")
+        if src.startswith(("http://", "https://")):
+            fields = importer.url_event(src, mode)
+        else:
+            p = Path(src)
+            with p.open("rb") as f:
+                fields = importer.event(deck, *importer.save(deck, f, p.stat().st_size, p.name), mode)
+        with LOCK:
+            ev = add_event(deck, fields)
+        return print(summary(ev))
     if a.kb_add:  # Claude adds things it was given in the terminal through here, never by editing index.json
         if len(a.rest) < 3:
             ap.error("--kb-add needs <scope> <file|web|ref> <path-or-url> [kind]")

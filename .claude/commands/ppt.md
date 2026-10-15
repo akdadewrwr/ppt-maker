@@ -13,7 +13,7 @@ argument-hint: <deck 名字或主题>
 
 ## 处理事件
 摘要格式：`e17 intent slide:s-intro [b-right,b-r1] 文字…`。完整内容在 `decks/<名字>/.ppt/inbox.jsonl`，按 id 查。
-- 处理 intent / answer / lint / kb 之前先标记：`python ppt/server.py --reply "decks/<名字>" <id> --ack`
+- 处理 intent / answer / lint / kb / import 之前先标记：`python ppt/server.py --reply "decks/<名字>" <id> --ack`
 - **intent**：有 `shot` 就用 Read 看截图（路径相对 deck 目录）。先重新读 deck.html，再只改 `blocks` 列出的块或对象（先列块，第一个是最内层的块；`o-` 开头的浮动对象排在块后面）；`blocks` 为空时按 `cells`（列范围/行范围）在该区域新建块。不动无关块。
 - **intent 且 `kind` 为 `draw-icon`**：用户想要一个图标库里没有的图标，`text` 是描述。在 `slide_id` 页按 `rect` 的位置和大小新建一个图标对象（格式见规则 10），自己画 24×24 的线条图：只用 `path / circle / rect / line / polyline`，不写颜色和线宽（它们由对象的 `color`、`stroke-width` 控制），风格与 Lucide 一致（圆角端点、2px 线、简洁）。新 id 以 `o-` 开头。
 - **intent 且 `kind` 为 `sketch`**：用户画了草图。用 Read 看 `shot`（整页截图，草图画在上面）：线条和框表示布局意图，箭头表示关系或流程；`notes` 是用户打的标注，以它的原文为准，不要从图里认字。不要把手绘线条原样搬进 deck，要做成正式的块、表格、形状、箭头或图标，并遵守格式规则。已有页只改 `blocks` 列出的块和对象，以及草图范围（`rect`）内需要新建的内容，除非用户的话另有说明；空白页（没有块）按草图生成整页。看不懂就在回执里问一个具体问题。
@@ -26,6 +26,15 @@ argument-hint: <deck 名字或主题>
 - **kb 事件 `kind:digest`**：消化一条资料。读 `source`（PDF 用 Read 按页读；图片直接看；有 `extracted` 时读这份抽出的文字；网址用 WebFetch 抓取，把标题、网址和正文写进 `snapshot`；旧 deck 的 `source` 是目录，读其中的 deck.html）。把卡片写到 `card`：frontmatter `id / type / title / source`，正文 `## 摘要`、`## 要点`、`## 可引用`（每条带位置，如 `- [p.12] 营收 12.3 亿`，网页写段落或小标题）；视觉参考和旧 deck 另写 `## 风格`（版式、配色、字体、结构）。然后 `python ppt/server.py --kb-done "decks/<名字>" <scope> <kb_id> "<标题>" "<一句话摘要>"` 并回执。读不了（加密、打不开、内容为空）就 `--kb-fail "decks/<名字>" <scope> <kb_id> "<原因>"` 并回执说明。
 - **kb 事件 `kind:skill`**：按 Claude Code Skills 的格式在 `dir/<英文短名>/SKILL.md` 写一个 skill：frontmatter `name`（与目录名相同）、`description`（一句话说明何时使用），正文把用户描述的规则写清楚、可执行。回执里告诉用户名字，并提醒在知识库面板的 Skills 页勾选。
 - **intent 带 `kb`**：用户指定了资料（id 列表），优先读这些卡片，按用户的话决定改哪里。这类意图的 `blocks` 为空、`rect` 是整页，意思是这一页的任何块都可以改（不是"在空白处新建"）。
+- **intent 且 `kind` 为 `batch`**：用户攒了一张清单一起发。`items` 每条是一个普通意图（字段同上，`shot` 是这条的截图，草图条目带 `notes`）；`text` 是总体说明。先把全部条目和总体说明读完、截图都看完，整体规划后再改；条目之间冲突时以总体说明为准；看不懂就问。只回执一次，按编号逐条说明（"1. … 2. …"）。
+- **import 事件**：把以前的 HTML 转成本 deck 的格式，尽量还原原样。`kind:file` 读 `source`（入口 HTML，同目录 `dir` 里有它的图片和样式）；`kind:url` 用 WebFetch 读网页。需要看原稿样子时用 Edge 无头截图：`"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" --headless=new --screenshot=<png> --window-size=1280,720 "<file:///… 或网址>"`，再用 Read 看。按 `hint` 转换：
+  - `ppt-maker`：直接复制各页，id 冲突换新 id；`mode:replace` 时连 `#theme` 一起沿用。
+  - `slides`：原来一页对一页，内容、布局、配色、字体尽量保持；布局对齐到 16×9 网格；颜色、字体写进 `#theme`；原有图表与 SVG 保留。
+  - `page`（网址也按这类）：按标题拆页（封面 + 每个章节一页），沿用原配色。
+  - 图片：`dir` 里的复制到本 deck 的 `assets/`；网上的下载到 `assets/`（失败就放占位框）。去掉脚本、动画、`on*` 属性、外部字体和脚本链接。
+  - `mode:replace`：保留 `#base`，换掉全部页面；`mode:append`：加在最后一页之后。每页、每块都按格式规则写 id 和 grid-area。
+  - 回执：导入了几页、哪些没能还原。识别不出内容或网址打不开：不改 deck，回执说明。
+- 用户在终端说"把 X 导入进来"：`python ppt/server.py --import "decks/<名字>" "<路径或网址>" [append|replace]`，它会记一条 import 事件，照上面处理。
 - 用户在终端直接说的话照常执行，规则相同。
 
 ## 知识库

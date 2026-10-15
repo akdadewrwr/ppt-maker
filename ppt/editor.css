@@ -56,3 +56,20 @@ body { padding-top: 48px; }
 .ppt-sketchbar .on { outline: 2px solid #2563eb; outline-offset: 1px; }
 .ppt-note-input { font: 20px "Microsoft YaHei", "PingFang SC", sans-serif; padding: 2px 6px; border: 1px solid #93c5fd; border-radius: 4px; background: #fff; min-width: 180px; }
 .ppt-sketching .ppt-top .ppt-btn { pointer-events: none; opacity: .4; } /* the sketch bar is the only toolbar while sketching */
+.ppt-kb { position: fixed; top: 48px; right: 0; bottom: 0; width: 360px; display: flex; flex-direction: column; background: #fff; border-left: 1px solid #d1d5db; box-shadow: -6px 0 20px rgba(0,0,0,.08); z-index: 2147483001; }
+.ppt-kb-head { display: flex; align-items: center; gap: 4px; padding: 8px; border-bottom: 1px solid #e5e7eb; }
+.ppt-kb-head b { margin-right: auto; }
+.ppt-kb-tab.on { background: #dbeafe; }
+.ppt-kb-body { flex: 1; overflow: auto; padding: 8px; }
+.ppt-kb-add { border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; margin-bottom: 4px; }
+.ppt-kb-body select, .ppt-kb-body input:not([type=checkbox]), .ppt-kb-body textarea { font: inherit; border: 1px solid #e5e7eb; border-radius: 6px; padding: 3px 6px; box-sizing: border-box; }
+.ppt-kb-body .ppt-row { flex-wrap: nowrap; } .ppt-kb-body .ppt-row input, .ppt-kb-body .ppt-row select[title="旧 deck"] { flex: 1; min-width: 0; }
+.ppt-kb-body textarea { width: 100%; min-height: 64px; resize: vertical; margin-bottom: 4px; }
+.ppt-kb-item { border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px 8px; margin: 6px 0; }
+.ppt-kb-item p { margin: 4px 0 0; color: #374151; }
+.ppt-kb-status { float: right; font-size: 12px; padding: 0 6px; border-radius: 999px; background: #fef3c7; }
+.ppt-kb-status.ready { background: #dcfce7; } .ppt-kb-status.failed { background: #fee2e2; }
+.ppt-kb-err { color: #dc2626; } .ppt-kb-empty { color: #9ca3af; margin: 4px 0; }
+.ppt-kb-acts { margin-top: 4px; } .ppt-kb-acts .ppt-btn { font-size: 12px; padding: 1px 6px; }
+.ppt-kb-card { white-space: pre-wrap; font: 12px/1.5 Consolas, "Microsoft YaHei", monospace; background: #f9fafb; border-radius: 6px; padding: 6px; max-height: 240px; overflow: auto; }
+.ppt-kb-skill { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0; cursor: pointer; }

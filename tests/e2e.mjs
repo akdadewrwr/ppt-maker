@@ -15,12 +15,17 @@ const EDGE = process.env.PPT_BROWSER || [
 ].find((p) => fs.existsSync(p));
 if (!EDGE) { console.error('no Edge/Chrome found; set PPT_BROWSER'); process.exit(2); }
 const PORT = 8800, DBG = 9333;
+const PROJ = path.join(SCRATCH, 'proj'), HOMEDIR = path.join(SCRATCH, 'home'); // the knowledge base under test, never the user's
+const KB_ENV = { ...process.env, PPT_PROJECT_DIR: PROJ, PPT_HOME_DIR: HOMEDIR };
+for (const [dir, file, text] of [[path.join(PROJ, '.claude', 'skills', 'brand'), 'SKILL.md', '---\nname: brand\ndescription: 公司品牌规范\n---\n主色蓝'],
+  [path.join(HOMEDIR, '.claude', 'skills', 'consult'), 'SKILL.md', '---\nname: consult\ndescription: 咨询式汇报\n---\n'],
+  [path.join(PROJ, 'decks', 'old'), 'deck.html', '<html><body></body></html>']]) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, file), text); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const check = (name, ok, info = '') => { results.push([ok, name]); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${info ? ' — ' + info : ''}`); };
 const inbox = () => { const f = path.join(DECK, '.ppt', 'inbox.jsonl'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []; };
 const deckHtml = () => fs.readFileSync(path.join(DECK, 'deck.html'), 'utf8');
-const py = (...a) => execFileSync('python', ['ppt/server.py', ...a], { cwd: REPO });
+const py = (...a) => execFileSync('python', ['ppt/server.py', ...a], { cwd: REPO, env: KB_ENV });
 function png(w, h) { // solid grey 8-bit greyscale PNG, enough to test sizing
   const chunk = (type, data) => { const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length, 0); b.write(type, 4); data.copy(b, 8); b.writeUInt32BE(zlib.crc32(Buffer.concat([Buffer.from(type), data])), 8 + data.length); return b; };
   const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 0;
@@ -39,7 +44,7 @@ fs.writeFileSync(path.join(DECK, 'deck.html'), tpl.replace(sec, sec + '\n' + mor
 // --- server ---
 let server, url;
 async function startServer() {
-  server = spawn('python', ['ppt/server.py', 'decks/e2e-smoke', '--no-open', '--port', String(PORT)], { cwd: REPO });
+  server = spawn('python', ['ppt/server.py', 'decks/e2e-smoke', '--no-open', '--port', String(PORT)], { cwd: REPO, env: KB_ENV });
   url = await new Promise((res) => server.stdout.on('data', (d) => { const m = String(d).match(/http\S+/); if (m) res(m[0]); }));
 }
 await startServer();
@@ -542,6 +547,54 @@ try {
   await sleep(2500); await ev(`document.querySelector('section.slide:not([id])').scrollIntoView({block: 'center'})`); await sleep(500);
   b8 = await byTitle('在当前页上画草图'); await click(b8.x, b8.y); await sleep(500);
   check('KR a slide without id cannot be sketched on', !(await ev(`document.querySelector('.ppt-sketch')`)) && /id/.test((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || ''));
+  // ---- 4: knowledge base ----
+  await open(url); await ev(`scrollTo(0, 0)`); await sleep(300);
+  let b9 = await byTitle('打开知识库'); await click(b9.x, b9.y); await sleep(1000);
+  check('B panel opens with three tabs', await ev(`!!document.querySelector('.ppt-kb:not([hidden])') && document.querySelectorAll('.ppt-kb-tab').length === 3`));
+  const kbIndex = (scope) => { const f = path.join(scope === 'global' ? path.join(HOMEDIR, '.ppt-maker', 'kb') : path.join(PROJ, 'kb'), 'index.json'); return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : []; };
+  const kbText = () => ev(`document.querySelector('.ppt-kb-body')?.textContent || ''`);
+  const setKbFiles = async (files) => { const d = await send('DOM.getDocument'); const q = await send('DOM.querySelector', { nodeId: d.result.root.nodeId, selector: '.ppt-kb input[type=file]' }); await send('DOM.setFileInputFiles', { files, nodeId: q.result.nodeId }); };
+  const mdPath = path.join(SCRATCH, '<b>年报</b>.md'.replace(/[<>/]/g, '_')); fs.writeFileSync(mdPath, '# 年报\n营收 12.3 亿，同比增长 18%。\n');
+  await setKbFiles([mdPath]); await sleep(3000);
+  const kb1 = kbIndex('project')[0];
+  check('B upload: saved as pending, Claude asked to digest', kb1?.status === 'pending' && fs.existsSync(path.join(PROJ, 'kb', kb1.source))
+    && inbox().some((e) => e.type === 'kb' && e.kind === 'digest' && e.kb_id === kb1.id), JSON.stringify(kb1));
+  check('B panel shows 消化中', (await kbText()).includes('消化中'));
+  fs.mkdirSync(path.join(PROJ, 'kb', 'cards'), { recursive: true }); fs.writeFileSync(path.join(PROJ, 'kb', 'cards', `${kb1.id}.md`), '## 摘要\n营收增长\n');
+  py('--kb-done', 'decks/e2e-smoke', 'project', kb1.id, '<script>window.__x=1</script>年报', '营收 12.3 亿'); await sleep(3000);
+  check('B after --kb-done: 就绪 and the summary', (await kbText()).includes('就绪') && (await kbText()).includes('营收 12.3 亿'));
+  check('B titles are shown as text', (await kbText()).includes('<script>window.__x=1</script>年报') && (await ev(`window.__x`)) === undefined);
+  b9 = await byTitle('查看 Claude 写的卡片'); await click(b9.x, b9.y); await sleep(1000);
+  check('B card shown in the panel', ((await ev(`document.querySelector('.ppt-kb-card')?.textContent`)) || '').includes('营收增长'));
+  await setKbFiles([mdPath]); await sleep(2500);
+  check('B the same file again is not added twice', kbIndex('project').length === 1 && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('已在知识库里'));
+  const urlBox = await rectOf('.ppt-kb input[placeholder^="粘贴网址"]'); await click(urlBox.x, urlBox.y); await type('https://example.com/report');
+  await sleep(2500);
+  check('B refresh keeps what you are typing', (await ev(`document.querySelector('.ppt-kb input[placeholder^="粘贴网址"]').value`)) === 'https://example.com/report');
+  await enter(); await sleep(2500);
+  check('B add a website', kbIndex('project').some((i) => i.type === 'web' && i.source === 'https://example.com/report'));
+  b9 = await byTitle('参考'); await click(b9.x, b9.y); await sleep(800);
+  await ev(`(() => { const s = document.querySelector('.ppt-kb select[title="旧 deck"]'); s.value = 'old'; })()`);
+  b9 = await byTitle('添加这个旧 deck'); await click(b9.x, b9.y); await sleep(2500);
+  check('B add an old deck as a reference', kbIndex('project').some((i) => i.type === 'ref' && i.kind === 'deck' && i.title === 'old') && (await kbText()).includes('old'));
+  b9 = await byTitle('Skills'); await click(b9.x, b9.y); await sleep(1000);
+  check('B project and global skills listed', (await kbText()).includes('公司品牌规范') && (await kbText()).includes('咨询式汇报'));
+  await ev(`document.querySelector('.ppt-kb input[type=checkbox][data-skill="brand"]').click()`); await sleep(2000);
+  check('B ticking a skill writes kb.json', (JSON.parse(fs.readFileSync(path.join(DECK, 'kb.json'), 'utf8')).skills || []).includes('brand'));
+  const skBox = await rectOf('.ppt-kb textarea'); await click(skBox.x, skBox.y); await type('我们的汇报写法：结论先行');
+  b9 = await byTitle('让 Claude 写这个 Skill'); await click(b9.x, b9.y); await sleep(2000);
+  const skEv = inbox().at(-1);
+  check('B new skill request goes to Claude', skEv?.type === 'kb' && skEv.kind === 'skill' && skEv.text === '我们的汇报写法：结论先行' && skEv.dir === path.join(PROJ, '.claude', 'skills'), JSON.stringify(skEv));
+  b9 = await byTitle('资料'); await click(b9.x, b9.y); await sleep(1000);
+  b9 = await byTitle('让 Claude 按这份资料改当前页'); await click(b9.x, b9.y); await sleep(400); await enter(); await sleep(2500);
+  const kbIntent = inbox().filter((e) => e.type === 'intent').at(-1);
+  check('B "用在这一页" sends an intent that names the item', JSON.stringify(kbIntent?.kb) === JSON.stringify([kb1.id]) && kbIntent.text === '按这份资料更新这一页', JSON.stringify({ ...kbIntent, shot: !!kbIntent?.shot }));
+  b9 = await byTitle('移到知识库的回收站'); await click(b9.x, b9.y); await sleep(2500);
+  check('B delete moves the item to the trash', !kbIndex('project').some((i) => i.id === kb1.id) && fs.existsSync(path.join(PROJ, 'kb', '.trash', kb1.id, 'item.json')));
+  fs.mkdirSync(path.join(HOMEDIR, '.ppt-maker', 'kb'), { recursive: true }); fs.writeFileSync(path.join(HOMEDIR, '.ppt-maker', 'kb', 'index.json'), '{oops');
+  await sleep(3000);
+  check('B a broken global index is reported and left alone', (await kbText()).includes('无法读取') && fs.readFileSync(path.join(HOMEDIR, '.ppt-maker', 'kb', 'index.json'), 'utf8') === '{oops');
+  b9 = await byTitle('关闭知识库'); await click(b9.x, b9.y); await sleep(300);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

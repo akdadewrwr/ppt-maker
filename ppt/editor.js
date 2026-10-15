@@ -61,6 +61,7 @@
     addImage: (f) => addImage(f, null),
     addIcon, drawIcon,
     sketch: () => openSketch(currentSlide()), addSketchSlide,
+    kb: () => kbPanel.toggle(),
     inkColor(c) {
       if (!c || !isObj(selected)) return;
       rememberColor(c);
@@ -70,6 +71,7 @@
     remove() { if (!selected) return; const id = selected.id; select(null); commit({ op: 'remove', target: id, label: `删除 ${id}` }); },
     ask: askSelected,
   });
+  const kbPanel = PPTKB.create(ui, { api, toast, ask: askWithKb });
   addEventListener('scroll', () => tb.reposition(), { passive: true });
   function restoreRange() { // put the edit-mode selection back after a toolbar control took focus
     if (!editing) return false;
@@ -433,6 +435,11 @@
     });
   });
 
+  function askWithKb(ids, title) { // from the knowledge base panel: "use this item on the current page"
+    const s = currentSlide(), r = { x: 0, y: 0, w: G.W, h: G.H };
+    openPop(s, r, el('div', 'ppt-abs ppt-sel', ui), `第 ${slides().indexOf(s) + 1} 页 · 参考《${title}》`,
+      (text) => submitIntent(s, r, text, [], { kb: ids }), '按这份资料更新这一页');
+  }
   function askSelected() {
     if (!selected) return;
     const slide = selected.closest('section.slide'), r = G.elementRect(slide.getBoundingClientRect(), selected);
@@ -482,7 +489,7 @@
     else if (selected && e.key === 'Enter') { e.preventDefault(); askSelected(); }
   });
 
-  async function submitIntent(slide, r, text, blocks = G.hitBlocks(slide, r)) {
+  async function submitIntent(slide, r, text, blocks = G.hitBlocks(slide, r), extra = {}) {
     let shot = null;
     try {
       const full = await htmlToImage.toCanvas(slide, { width: G.W, height: G.H, pixelRatio: 1, style: { zoom: '1', margin: '0' } });
@@ -492,7 +499,7 @@
       shot = c.toDataURL('image/png');
     } catch (err) { console.warn('[ppt] screenshot failed', err); }
     enqueue({ type: 'intent', slide: slides().indexOf(slide) + 1, slide_id: slide.id, rect: r,
-              cells: G.rectToCells(r), blocks, text, shot });
+              cells: G.rectToCells(r), blocks, text, shot, ...extra });
   }
 
   // ---- direct text editing (double-click a leaf block, or a shape: its centred text area) ----

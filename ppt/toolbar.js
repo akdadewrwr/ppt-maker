@@ -52,6 +52,7 @@
     const iconBtn = btn(top, '+图标', '插入图标', () => openIcons(iconBtn));
     btn(top, '✎ 草图', '在当前页上画草图', () => cb.sketch());
     btn(top, '+草图页', '插入空白页并画草图', () => cb.addSketchSlide());
+    btn(top, '📚 知识库', '打开知识库', () => cb.kb());
     sep(top);
     btn(top, '+页', '在当前页之后插入空白页', () => cb.addSlide());
     const delSlide = btn(top, '−页', '删除当前页', () => cb.removeSlide());

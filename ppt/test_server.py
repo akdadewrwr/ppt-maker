@@ -643,6 +643,131 @@ class KbModuleTests(KbCase):
             kb.card(self.deck, "project", "../index")
 
 
+def post_raw(port, path, data, ctype="application/octet-stream", method="POST"):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request(method, path, data, {"Host": f"127.0.0.1:{port}", "Content-Type": ctype})
+    r = c.getresponse()
+    out = (r.status, r.read())
+    c.close()
+    return out
+
+
+class KbServerTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.proj, self.home = self.tmp / "proj", self.tmp / "home"
+        env = mock.patch.dict(os.environ, {"PPT_PROJECT_DIR": str(self.proj), "PPT_HOME_DIR": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.r = self.proj / "kb"
+
+    def up(self, data, name, typ="file", kind="", scope="project", token="tok"):
+        q = f"/api/kb/file?t={token}&scope={scope}&type={typ}&kind={kind}&name={quote(name)}"
+        status, body = post_raw(self.port, q, data)
+        return status, json.loads(body) if body.startswith(b"{") else body
+
+    def test_upload_streams_and_asks_claude_to_digest(self):
+        status, body = self.up(DOCX, "报告.docx")
+        self.assertEqual((status, body["created"]), (200, True))
+        item = body["item"]
+        self.assertEqual(kb.load(self.r)[0]["id"], item["id"])
+        ev = inbox(self.deck)[-1]
+        self.assertEqual((ev["type"], ev["kind"], ev["kb_id"], ev["extracted"]), ("kb", "digest", item["id"], str(self.r / item["text"])))
+        self.assertTrue(server.summary(ev).startswith(f"{ev['id']} kb kind:digest"))
+        status, body = self.up(DOCX, "again.docx")
+        self.assertEqual((status, body["created"]), (200, False))
+        self.assertEqual(len([e for e in inbox(self.deck) if e["type"] == "kb"]), 1)  # no second digest for a duplicate
+
+    def test_upload_rejections_reach_the_client(self):
+        self.assertEqual(self.up(b"x" * 1000, "a.exe")[0], 400)
+        self.assertEqual(self.up(b"x" * 1000, "a.png", typ="ref")[0], 400)
+        self.assertEqual(self.up(b"x" * 1000, "a.md", token="bad")[0], 403)
+        with mock.patch.object(kb, "MAX_FILE", 16):
+            self.assertEqual(self.up(b"x" * 1000, "a.md")[0], 413)
+        self.assertFalse(self.r.exists())
+
+    def test_add_remove_redigest(self):
+        def post(path, body):
+            s, b = post_raw(self.port, f"{path}?t=tok", json.dumps(body).encode(), "application/json")
+            return s, json.loads(b)
+        self.assertEqual(post("/api/kb/add", {"scope": "project", "type": "web", "url": "ftp://x"})[0], 400)
+        s, b = post("/api/kb/add", {"scope": "global", "type": "web", "url": "https://example.com"})
+        self.assertEqual((s, b["created"]), (200, True))
+        g = self.home / ".ppt-maker" / "kb"
+        self.assertEqual(kb.load(g)[0]["source"], "https://example.com")
+        (self.proj / "decks" / "old").mkdir(parents=True)
+        (self.proj / "decks" / "old" / "deck.html").write_text("x", encoding="utf-8")
+        s, b = post("/api/kb/add", {"scope": "project", "deck": "old"})
+        self.assertEqual((s, b["item"]["kind"]), (200, "deck"))
+        did = b["item"]["id"]
+        kb.update(self.r, did, status="failed", note="打不开")
+        s, b = post("/api/kb/redigest", {"scope": "project", "id": did})
+        self.assertEqual((s, b["item"]["status"], b["item"]["note"]), (200, "pending", ""))
+        self.assertEqual(inbox(self.deck)[-1]["kb_id"], did)
+        s, b = post("/api/kb/remove", {"scope": "project", "id": did})
+        self.assertEqual((s, kb.load(self.r)), (200, []))
+        self.assertEqual(post("/api/kb/remove", {"scope": "project", "id": did})[0], 400)
+        self.assertEqual(post("/api/kb/add", {"scope": "nowhere", "type": "web", "url": "https://x.com"})[0], 400)
+
+    def test_bad_index_is_409_and_untouched(self):
+        g = self.home / ".ppt-maker" / "kb"
+        g.mkdir(parents=True)
+        (g / "index.json").write_text("{oops", encoding="utf-8")
+        st = json.loads(self.req("GET", "/api/kb?t=tok")[1])
+        self.assertTrue(st["global"]["error"])
+        s, _ = post_raw(self.port, "/api/kb/add?t=tok", json.dumps({"scope": "global", "type": "web", "url": "https://x.com"}).encode(), "application/json")
+        self.assertEqual(s, 409)
+        self.assertEqual(self.up(b"# x", "a.md", scope="global")[0], 409)
+        self.assertEqual((g / "index.json").read_text(encoding="utf-8"), "{oops")
+
+    def test_skills_put_and_skill_request(self):
+        s, b = post_raw(self.port, "/api/kb/skills?t=tok", json.dumps({"skills": ["brand"]}).encode(), "application/json", "PUT")
+        self.assertEqual((s, json.loads(b)["enabled"]), (200, ["brand"]))
+        self.assertEqual(kb.selection(self.deck), ["brand"])
+        self.assertEqual(post_raw(self.port, "/api/kb/skills?t=tok", b'{"skills": "brand"}', "application/json", "PUT")[0], 400)
+        s, _ = post_raw(self.port, "/api/kb/skill?t=tok", json.dumps({"scope": "global", "text": "品牌规范：主色蓝"}).encode(), "application/json")
+        ev = inbox(self.deck)[-1]
+        self.assertEqual((s, ev["kind"], ev["dir"], ev["text"]), (200, "skill", str(self.home / ".claude" / "skills"), "品牌规范：主色蓝"))
+        self.assertEqual(post_raw(self.port, "/api/kb/skill?t=tok", b'{"scope": "project", "text": " "}', "application/json")[0], 400)
+
+    def test_state_and_card(self):
+        st = json.loads(self.req("GET", "/api/kb?t=tok")[1])
+        self.assertEqual((st["project"]["items"], st["skills"], st["enabled"]), ([], [], []))
+        self.assertEqual(self.req("GET", "/api/kb")[0], 403)
+        _, body = self.up(b"# x", "a.md")
+        (self.r / "cards").mkdir()
+        (self.r / "cards" / f"{body['item']['id']}.md").write_text("## 摘要\n要点", encoding="utf-8")
+        s, b = self.req("GET", f"/api/kb/card?t=tok&scope=project&id={body['item']['id']}")
+        self.assertEqual((s, json.loads(b)["text"]), (200, "## 摘要\n要点"))
+        self.assertEqual(self.req("GET", "/api/kb/card?t=tok&scope=project&id=k-zzzzzz")[0], 404)
+
+    def test_kb_done_and_fail_cli(self):
+        _, body = self.up(b"# x", "a.md")
+        kid = body["item"]["id"]
+        server.main(["--kb-done", str(self.deck), "project", kid, "年报", "营收", "12.3 亿"])
+        self.assertEqual({k: kb.load(self.r)[0][k] for k in ("status", "title", "summary")}, {"status": "ready", "title": "年报", "summary": "营收 12.3 亿"})
+        server.main(["--kb-fail", str(self.deck), "project", kid, "加密", "PDF"])
+        self.assertEqual((kb.load(self.r)[0]["status"], kb.load(self.r)[0]["note"]), ("failed", "加密 PDF"))
+
+    def test_intent_kb_field(self):
+        self.assertEqual(self.req("POST", "/api/event?t=tok", {"type": "intent", "text": "x", "kb": ["k-abc123"]})[0], 200)
+        e = inbox(self.deck)[-1]
+        self.assertEqual(e["kb"], ["k-abc123"])
+        self.assertIn("kb:k-abc123", server.summary(e))
+        for bad in ([5], ["k" * 21], ["k-a"] * 21):
+            self.assertEqual(self.req("POST", "/api/event?t=tok", {"type": "intent", "text": "x", "kb": bad})[0], 400)
+
+    def test_tail_catches_up_kb_events(self):
+        self.up(b"# x", "a.md")
+        lines, done = [], threading.Event()
+        th = threading.Thread(target=server.tail, args=(self.deck, lines.append, done.is_set, 0.05), daemon=True)
+        th.start()
+        _time.sleep(0.3)
+        done.set()
+        th.join(2)
+        self.assertTrue(any(" kb kind:digest " in l for l in lines), lines)
+
+
 class CliTests(ServerCase):
     def test_reply_drives_status(self):
         server.reply(self.deck, "e1", ack=True)

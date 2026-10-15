@@ -11,15 +11,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import kb
+
 HERE = Path(__file__).resolve().parent
 MAX_BODY = 10 * 1024 * 1024
 MAX_SHOT = 5 * 1024 * 1024
+DRAIN_MAX = 256 * 1024 * 1024  # read off (never store) an upload we refuse, up to this size
 MAX_TEXT = 4000
 MAX_NOTES = 50
 MAX_NOTE = 200
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
+REPLY_TYPES = EVENT_TYPES | {"kb"}  # kb events are written by the server, not posted by the page
 FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
-               "blocks": list, "text": str, "issues": list, "quote": dict, "notes": list}
+               "blocks": list, "text": str, "issues": list, "quote": dict, "notes": list, "kb": list}
 HEARTBEAT_SECS = 10
 ONLINE_SECS = 30
 HISTORY_MAX = 200
@@ -33,6 +37,7 @@ INJECT = ('<link rel="stylesheet" href="/_ppt/editor.css" data-ppt>'
           '%s'
           '<script src="/_ppt/icons-zh.js" data-ppt></script>'
           '<script src="/_ppt/sketch.js" data-ppt></script>'
+          '<script src="/_ppt/kb-panel.js" data-ppt></script>'
           '<script src="/_ppt/toolbar.js" data-ppt></script>'
           '<script src="/_ppt/editor.js" data-ppt></script>')
 ICONS_JS = '<script src="/_ppt/icons.js" data-ppt></script>'
@@ -118,6 +123,9 @@ def clean_event(body):
     notes = ev.get("notes")
     if notes is not None and (len(notes) > MAX_NOTES or not all(isinstance(n, str) and len(n) <= MAX_NOTE for n in notes)):
         raise ValueError("bad notes")
+    refs = ev.get("kb")
+    if refs is not None and (len(refs) > 20 or not all(isinstance(k, str) and len(k) <= 20 for k in refs)):
+        raise ValueError("bad kb")
     q = ev.get("quote")
     if q is not None and not (isinstance(q.get("text"), str) and q["text"] and len(q["text"]) <= MAX_TEXT
                               and all(isinstance(q.get(k, ""), str) for k in ("before", "after"))):
@@ -182,7 +190,8 @@ def summary(e):
     quote = f" quote:「{e['quote']['text'][:20]}」" if e.get("quote") else ""
     notes = " notes:" + "".join(f"「{n[:10]}」" for n in e["notes"][:3]) if e.get("notes") else ""
     kind = f" kind:{e['kind']}" if e.get("kind") else ""
-    line = f"{e['id']} {e['type']}{kind}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote}{notes} {text[:60]}"
+    kbs = f" kb:{','.join(e['kb'])}" if e.get("kb") else ""
+    line = f"{e['id']} {e['type']}{kind}{re_} slide:{e.get('slide_id') or '-'} [{','.join(blocks)}]{quote}{notes}{kbs} {text[:60]}"
     return " ".join(line.split())
 
 
@@ -199,7 +208,7 @@ def tail(deck, emit, stop=lambda: False, interval=0.5):
     inbox, hb = rt / "inbox.jsonl", rt / "heartbeat"
     events, st = read_jsonl(inbox), statuses(deck)
     for e in events:
-        if e.get("type") in EVENT_TYPES and st.get(e.get("id")) != "done":
+        if e.get("type") in REPLY_TYPES and st.get(e.get("id")) != "done":
             emit(safe_summary(e))
     seen, beat = len(events), 0.0
     while not stop():
@@ -339,24 +348,84 @@ class Handler(BaseHTTPRequestHandler):
 
     def guard(self, need_token):
         """Host check always (DNS rebinding); token for pages/APIs. Returns parsed URL or None."""
+        self.stream_len = 0
         if self.command in ("POST", "PUT"):
             # read the body before any reply: closing with unread bytes makes Windows reset the
             # socket, and the client never sees our 403/404
             n = int(self.headers.get("Content-Length") or 0)
-            self.too_large = n > MAX_BODY
-            self.body = self.rfile.read(n) if 0 < n <= MAX_BODY else b""
-            if self.too_large and n <= 4 * MAX_BODY:  # ponytail: bigger than 4x just gets the socket reset
-                drain(self.rfile, n)  # discarded in chunks, never held: the 413 still reaches the client
+            if urlparse(self.path).path == "/api/kb/file":  # streamed to disk by the handler, after the checks below
+                self.body, self.too_large, self.stream_len = b"", False, n
+            else:
+                self.too_large = n > MAX_BODY
+                self.body = self.rfile.read(n) if 0 < n <= MAX_BODY else b""
+                if self.too_large and n <= 4 * MAX_BODY:  # ponytail: bigger than 4x just gets the socket reset
+                    drain(self.rfile, n)  # discarded in chunks, never held: the 413 still reaches the client
         port = self.server.server_address[1]
         if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            self.discard_stream()
             self.send(403, {"error": "bad host"})
             return None
         url = urlparse(self.path)
         t = parse_qs(url.query).get("t", [""])[0]
         if need_token and not secrets.compare_digest(t.encode(), self.server.token.encode()):
+            self.discard_stream()
             self.send(403, {"error": "bad token"})
             return None
         return url
+
+    def discard_stream(self):
+        """A streamed upload we will not take: read it off the socket so the reply arrives."""
+        if self.stream_len and self.stream_len <= DRAIN_MAX:
+            drain(self.rfile, self.stream_len)
+        self.stream_len = 0
+
+    def kb_post(self, url):
+        deck, q = self.server.deck, parse_qs(url.query)
+        arg = lambda k: q.get(k, [""])[0]
+        try:
+            with LOCK:
+                if url.path == "/api/kb/file":
+                    if self.stream_len > kb.MAX_FILE:
+                        self.discard_stream()
+                        return self.send(413, {"error": "文件超过 50MB"})
+                    scope = arg("scope")
+                    try:  # refuse before taking any bytes, then drain them so the client gets the answer
+                        kb.check_file(arg("name"), arg("type"), arg("kind") or None)
+                        r = kb.root(deck, scope)
+                        kb.load(r)
+                    except (ValueError, kb.BadIndex):
+                        self.discard_stream()
+                        raise
+                    item, created = kb.add_file(r, self.rfile, self.stream_len, arg("name"), arg("type"), arg("kind") or None)
+                    self.stream_len = 0
+                else:
+                    body = self.read_json()
+                    if not isinstance(body, dict):
+                        raise ValueError("bad body")
+                    scope = body.get("scope", "project")
+                    r = kb.root(deck, scope)
+                    if url.path == "/api/kb/add":
+                        item, created = (kb.add_deck(r, kb.project_dir(deck) / "decks" / kb.safe_name(body["deck"])) if body.get("deck")
+                                         else kb.add_url(r, body.get("url", ""), body.get("type"), body.get("kind")))
+                    elif url.path == "/api/kb/remove":
+                        return self.send(200, {"item": kb.remove(r, str(body.get("id")))})
+                    elif url.path == "/api/kb/redigest":
+                        item, created = kb.update(r, str(body.get("id")), status="pending", note=""), True
+                    elif url.path == "/api/kb/skill":
+                        text = str(body.get("text", "")).strip()
+                        if not text or len(text) > MAX_TEXT:
+                            raise ValueError("请描述这个 Skill")
+                        ev = add_event(deck, {"type": "kb", "kind": "skill", "scope": scope, "text": text, "dir": str(kb.skills_root(deck, scope))})
+                        return self.send(200, {"id": ev["id"]})
+                    else:
+                        return self.send(404, {"error": "not found"})
+                if created:
+                    add_event(deck, kb.digest_event(deck, scope, item))
+                return self.send(200, {"item": item, "created": created})
+        except kb.BadIndex as e:
+            return self.send(409, {"error": str(e)})
+        except ValueError as e:
+            return self.send(400, {"error": str(e)})
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -373,6 +442,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, html, "text/html; charset=utf-8")
         if path == "/api/state":
             return self.send(200, {**state(deck), "history": self.server.history.info()})
+        if path == "/api/kb":
+            with LOCK:
+                return self.send(200, kb.state(deck))
+        if path == "/api/kb/card":
+            q = parse_qs(url.query)
+            try:
+                return self.send(200, {"text": kb.card(deck, q.get("scope", [""])[0], q.get("id", [""])[0])})
+            except (ValueError, OSError) as e:
+                return self.send(404, {"error": str(e)})
         if path == "/api/deck":  # raw file text: the page saves edits into this, not into the live DOM
             with LOCK:
                 return self.send(200, {"version": deck_version(deck), "html": (deck / "deck.html").read_text(encoding="utf-8")})
@@ -393,6 +471,8 @@ class Handler(BaseHTTPRequestHandler):
         url = self.guard(need_token=True)
         if not url:
             return
+        if url.path.startswith("/api/kb/"):
+            return self.kb_post(url)
         if url.path == "/api/asset":
             if self.too_large:
                 return self.send(413, {"error": "image larger than 10MB"})
@@ -423,6 +503,13 @@ class Handler(BaseHTTPRequestHandler):
         url = self.guard(need_token=True)
         if not url:
             return
+        if url.path == "/api/kb/skills":
+            try:
+                body = self.read_json()
+                kb.set_selection(self.server.deck, body.get("skills") if isinstance(body, dict) else None)
+            except ValueError as e:
+                return self.send(400, {"error": str(e)})
+            return self.send(200, {"enabled": kb.selection(self.server.deck)})
         if url.path != "/api/deck":
             return self.send(404, {"error": "not found"})
         try:
@@ -488,12 +575,22 @@ def main(argv=None):
     ap.add_argument("--tail", action="store_true", help="print pending/new events (run under Claude Code Monitor)")
     ap.add_argument("--reply", action="store_true", help="write a reply: <deck> <event_id> [text]")
     ap.add_argument("--ack", action="store_true", help="with --reply: mark the event as being processed")
+    ap.add_argument("--kb-done", action="store_true", help="mark a kb item digested: <deck> <scope> <id> <title> <summary>")
+    ap.add_argument("--kb-fail", action="store_true", help="mark a kb item failed: <deck> <scope> <id> <reason>")
     a = ap.parse_args(argv)
     deck = Path(a.deck).resolve()
     if not (deck / "deck.html").is_file():
         ap.error(f"{deck / 'deck.html'} not found")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if a.kb_done or a.kb_fail:
+        if len(a.rest) < (4 if a.kb_done else 3):
+            ap.error("--kb-done needs <scope> <id> <title> <summary>; --kb-fail needs <scope> <id> <reason>")
+        scope, item_id = a.rest[0], a.rest[1]
+        fields = ({"status": "ready", "title": a.rest[2], "summary": " ".join(a.rest[3:]), "note": ""} if a.kb_done
+                  else {"status": "failed", "note": " ".join(a.rest[2:])})
+        kb.update(kb.root(deck, scope), item_id, **fields)
+        return print(f"{item_id}: {fields['status']}")
     if a.reply:
         if not a.rest:
             ap.error("--reply needs an event id")

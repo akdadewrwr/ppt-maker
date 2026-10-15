@@ -41,3 +41,13 @@ body { padding-top: 48px; }
 .ppt-toast { position: fixed; left: 50%; top: 48px; transform: translateX(-50%); z-index: 2147483001; }
 .ppt-rot { left: 50%; top: -28px; border-radius: 50%; cursor: grab; }
 .ppt-end { border-radius: 50%; cursor: move; }
+.ppt-armed .slide { cursor: copy; }
+.ppt-menu, .ppt-icons { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); padding: 6px; box-sizing: border-box; }
+.ppt-menu { display: flex; flex-direction: column; align-items: stretch; }
+.ppt-menu .ppt-btn { text-align: left; }
+.ppt-icons { width: 340px; }
+.ppt-icons input { font: inherit; border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 6px; box-sizing: border-box; }
+.ppt-icons > input { width: 100%; margin-bottom: 6px; }
+.ppt-icons .ppt-row { flex-wrap: nowrap; margin: 0; } .ppt-icons .ppt-row input { flex: 1; min-width: 0; }
+.ppt-icon-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; max-height: 240px; overflow: auto; margin-bottom: 6px; }
+.ppt-icon { padding: 4px; } .ppt-icon svg { display: block; width: 24px; height: 24px; }

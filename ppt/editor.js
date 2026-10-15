@@ -4,6 +4,7 @@
   const G = window.PPTGeom, O = window.PPTOps, TOKEN = window.PPT.token;
   let version = window.PPT.version, saving = false, editing = null, drag = null, pop = null, lastKey = '';
   let replayPending = false; // a save failed offline: reload+replay once the server is back
+  let armed = null; // shape kind waiting to be drawn
   let lastSave = Promise.resolve();
   const api = (p) => `${p}?t=${encodeURIComponent(TOKEN)}`;
   const slides = () => [...document.querySelectorAll('section.slide')];
@@ -55,6 +56,9 @@
     addText, addSlide, removeSlide,
     startResize(handle, e) { if (selected) beginDrag(handle, selected, e); },
     z: setZ,
+    armShape(shape) { select(null); armed = shape; document.documentElement.classList.add('ppt-armed'); },
+    addImage: (f) => addImage(f, null),
+    addIcon, drawIcon,
     textStyle, blockStyle, toggle, border, toggleShadow,
     remove() { if (!selected) return; const id = selected.id; select(null); commit({ op: 'remove', target: id, label: `删除 ${id}` }); },
     ask: askSelected,
@@ -113,6 +117,51 @@
   }
   function toggleShadow() {
     if (selected) blockStyle({ 'box-shadow': selected.style.boxShadow ? null : '0 4px 16px rgba(0,0,0,.15)' });
+  }
+  // ---- inserting objects ----
+  const KIND_ZH = { shape: '形状', arrow: '箭头', icon: '图标', image: '图片' };
+  const LINES = new Set(['line', 'arrow', 'arrow2']);
+  function disarm() { armed = null; document.documentElement.classList.remove('ppt-armed'); }
+  function addObj(slide, args) {
+    const id = O.newId(document, 'o-');
+    if (!O.hasObjBase(document)) commit({ op: 'ensureBase', label: '补充对象样式' }); // an older deck: same save as the object
+    commit({ op: 'insertObj', args: { id, slideId: slide.id, ...args }, label: `插入${KIND_ZH[args.kind]} ${id}` });
+    select(document.getElementById(id));
+  }
+  function drawShape(slide, shape, a, b) { // a/b: canvas-px points where the drag started and ended
+    const click = Math.abs(b.x - a.x) < 6 && Math.abs(b.y - a.y) < 6;
+    if (LINES.has(shape)) {
+      const ends = click ? { x1: a.x - 80, y1: a.y, x2: a.x + 80, y2: a.y } : { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+      return addObj(slide, { kind: 'arrow', shape, ends, style: { stroke: '#2563eb', 'stroke-width': '2' } });
+    }
+    const geom = click ? { x: a.x - 80, y: a.y - 50, w: 160, h: 100 }
+                       : { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+    addObj(slide, { kind: 'shape', shape, geom, style: { fill: '#dbeafe', stroke: '#2563eb', 'stroke-width': '2' } });
+  }
+  function addIcon(name) {
+    const body = window.PPTIcons?.[name]?.body;
+    if (!body) return;
+    addObj(currentSlide(), { kind: 'icon', geom: { x: G.W / 2 - 32, y: G.H / 2 - 32, w: 64, h: 64 }, style: { color: '#111827', 'stroke-width': '2' },
+      html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">${body}</svg>` });
+  }
+  function drawIcon(text) {
+    const s = currentSlide(), r = { x: G.W / 2 - 32, y: G.H / 2 - 32, w: 64, h: 64 };
+    enqueue({ type: 'intent', kind: 'draw-icon', slide: slides().indexOf(s) + 1, slide_id: s.id, rect: r, cells: G.rectToCells(r), blocks: [], text });
+  }
+  async function addImage(file, at) { // at: {slide, x, y} in canvas px (drop point), or null = centre of the current slide
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) return toast('只支持 PNG、JPEG、GIF、WebP 图片');
+    if (file.size > 10 * 1024 * 1024) return toast('图片超过 10MB，请先压缩');
+    let src, img;
+    try {
+      const r = await fetch(api('/api/asset'), { method: 'POST', headers: { 'Content-Type': file.type }, body: file });
+      if (!r.ok) throw new Error(String(r.status));
+      src = (await r.json()).src;
+      img = new Image(); img.src = src; await img.decode();
+    } catch (err) { return toast(`图片没有插入（${err.message}）`); }
+    const k = Math.min(1, 480 / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+    const cx = at ? at.x : G.W / 2, cy = at ? at.y : G.H / 2, inside = (v, size, max) => Math.round(Math.min(Math.max(v - size / 2, 0), Math.max(0, max - size)));
+    addObj(at?.slide || currentSlide(), { kind: 'image', geom: { x: inside(cx, w, G.W), y: inside(cy, h, G.H), w, h }, html: `<img src="${src}" alt="">` });
   }
   function setZ(dir) {
     if (!isObj(selected)) return;
@@ -242,6 +291,10 @@
     if (!slide) { select(null); return; }
     e.preventDefault();
     closePop();
+    if (armed) {
+      drag = { mode: 'draw', shape: armed, slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
+      return place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
+    }
     if (selected && selected.contains(e.target) && (movable(selected) || isObj(selected))) return beginDrag('move', selected, e);
     drag = { mode: 'area', slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
     place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
@@ -249,7 +302,7 @@
   addEventListener('mousemove', (e) => {
     if (!drag) return;
     const sr = drag.slide.getBoundingClientRect();
-    if (drag.mode === 'area') return place(drag.box, G.slideToClient(sr, G.clientToSlide(sr, drag.x0, drag.y0, e.clientX, e.clientY)));
+    if (drag.mode === 'area' || drag.mode === 'draw') return place(drag.box, G.slideToClient(sr, G.clientToSlide(sr, drag.x0, drag.y0, e.clientX, e.clientY)));
     if (drag.obj) { O.apply(document, objOp(drag, e)); return tb.reposition(); }
     const k = G.W / sr.width; // live preview only; the op is committed on mouseup
     drag.el.style.gridArea = G.gridStr(G.dragGrid(drag.g0, (e.clientX - drag.x0) * k, (e.clientY - drag.y0) * k, drag.mode));
@@ -259,6 +312,11 @@
     if (!drag) return;
     const d = drag; drag = null;
     const sr = d.slide.getBoundingClientRect();
+    if (d.mode === 'draw') {
+      d.box.remove(); disarm();
+      const pt = (x, y) => G.clientToSlide(sr, x, y, x, y);
+      return drawShape(d.slide, d.shape, pt(d.x0, d.y0), pt(e.clientX, e.clientY));
+    }
     if (d.obj) {
       const op = objOp(d, e), before = d.e0 || d.g0;
       if (Object.keys(before).some((key) => Math.round(op.args[key]) !== Math.round(before[key]))) commit(op);
@@ -364,7 +422,7 @@
     const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
     if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); undoRedo('undo'); }
     else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); undoRedo('redo'); }
-    else if (e.key === 'Escape') { closePop(); select(null); }
+    else if (e.key === 'Escape') { closePop(); select(null); disarm(); }
     else if (isObj(selected) && e.key.startsWith('Arrow')) {
       e.preventDefault();
       const n = e.shiftKey ? 10 : 1, dx = { ArrowLeft: -n, ArrowRight: n }[e.key] || 0, dy = { ArrowUp: -n, ArrowDown: n }[e.key] || 0;
@@ -426,10 +484,24 @@
     await commit(block === owner ? { op: 'setHTML', target: block.id, args: { html }, label: `改字 ${block.id}` }
                                  : { op: 'setHTML', target: owner.id, args: { html, text: true }, label: `改字 ${owner.id}` });
   }
-  document.addEventListener('paste', (e) => { // plain text only: no foreign markup or remote images in the deck
-    if (!editing || !editing.block.contains(e.target)) return;
-    e.preventDefault();
-    document.execCommand('insertText', false, e.clipboardData?.getData('text/plain') || '');
+  document.addEventListener('paste', (e) => {
+    if (editing) { // plain text only: no foreign markup, remote images or pasted pictures inside text
+      if (!editing.block.contains(e.target)) return;
+      e.preventDefault();
+      document.execCommand('insertText', false, e.clipboardData?.getData('text/plain') || '');
+      return;
+    }
+    if (e.target.closest?.('#ppt-ui')) return;
+    const f = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/'));
+    if (f) { e.preventDefault(); addImage(f, null); }
+  });
+  document.addEventListener('dragover', (e) => { if (e.target.closest?.('section.slide') && e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+  document.addEventListener('drop', (e) => {
+    const slide = e.target.closest?.('section.slide'), f = e.dataTransfer?.files?.[0];
+    if (!slide || !f) return;
+    e.preventDefault(); // never let the browser navigate away to the dropped file
+    const p = G.clientToSlide(slide.getBoundingClientRect(), e.clientX, e.clientY, e.clientX, e.clientY);
+    addImage(f, { slide, x: p.x, y: p.y });
   });
   // ---- direct edits: ops applied live, queued, then saved onto the file text ----
   let chain = Promise.resolve();

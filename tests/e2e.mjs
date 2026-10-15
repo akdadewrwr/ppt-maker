@@ -4,6 +4,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 
 const REPO = process.argv[2] || process.cwd();
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'ppt-e2e-'));
@@ -20,6 +21,12 @@ const check = (name, ok, info = '') => { results.push([ok, name]); console.log(`
 const inbox = () => { const f = path.join(DECK, '.ppt', 'inbox.jsonl'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []; };
 const deckHtml = () => fs.readFileSync(path.join(DECK, 'deck.html'), 'utf8');
 const py = (...a) => execFileSync('python', ['ppt/server.py', ...a], { cwd: REPO });
+function png(w, h) { // solid grey 8-bit greyscale PNG, enough to test sizing
+  const chunk = (type, data) => { const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length, 0); b.write(type, 4); data.copy(b, 8); b.writeUInt32BE(zlib.crc32(Buffer.concat([Buffer.from(type), data])), 8 + data.length); return b; };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 0;
+  const raw = Buffer.alloc((w + 1) * h, 0x80); for (let y = 0; y < h; y++) raw[y * (w + 1)] = 0;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
 
 // --- deck with 3 slides so scroll restore is observable ---
 fs.rmSync(DECK, { recursive: true, force: true }); // only our own smoke deck, never the user's decks
@@ -357,6 +364,59 @@ try {
   await sleep(3000);
   const lastLint = JSON.stringify(inbox().filter((e) => e.type === 'lint').at(-1) || {});
   check('L Claude object off the canvas is reported', lastLint.includes('obj-outside') && lastLint.includes('o-out') && !lastLint.includes('o-sh'), lastLint);
+  // ---- 2b: inserting objects ----
+  fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace(/\n\s*\.obj[^\n]*/g, '')); // an old deck: #base has no object rules
+  await sleep(2500); await open(url); await ev(`scrollTo(0, 0)`); await sleep(300);
+  check('I old deck has no object rules', !/\.obj\s*\{/.test(deckHtml()));
+  const ki = await kZoom();
+  let b6 = await byTitle('插入形状'); await click(b6.x, b6.y); await sleep(200);
+  b6 = await byTitle('画椭圆'); await click(b6.x, b6.y); await sleep(200);
+  let sl = await rectOf('#s-cover');
+  await drag(sl.l + 100 * ki, sl.t + 100 * ki, sl.l + 300 * ki, sl.t + 200 * ki); await sleep(2000);
+  check('I draw an ellipse by dragging', /<div class="obj" id="o-[0-9a-z]{6}" data-kind="shape" data-shape="ellipse" style="left: 100px; top: 100px; width: 200px; height: 100px;[^"]*"><svg viewBox="0 0 200 100"><ellipse/.test(deckHtml()));
+  check('I first object adds the #base rules in the same save', /\.obj\s*\{/.test(deckHtml()) && /补充对象样式/.test(inbox().at(-1)?.label || ''), inbox().at(-1)?.label);
+  check('I new object is selected', !!(await byTitle('填充')));
+  await key('z', 'KeyZ', 90, 2); await sleep(3000);
+  check('I undo removes the object and the added rules together', !deckHtml().includes('data-shape="ellipse"') && !/\.obj\s*\{/.test(deckHtml()));
+  await ev(`scrollTo(0, 0)`); await sleep(300);
+  b6 = await byTitle('插入形状'); await click(b6.x, b6.y); await sleep(200);
+  b6 = await byTitle('画箭头'); await click(b6.x, b6.y); await sleep(200);
+  sl = await rectOf('#s-cover'); await click(sl.l + 640 * ki, sl.t + 600 * ki); await sleep(2000);
+  check('I a click places a 160px arrow', /data-kind="arrow" data-shape="arrow" style="left: 552px; top: 592px; width: 176px; height: 16px;/.test(deckHtml()));
+  // icons
+  b6 = await byTitle('插入图标'); await click(b6.x, b6.y); await sleep(300);
+  await type('房子'); await sleep(300);
+  check('I icon search finds house by its Chinese name', !!(await byTitle('house')));
+  const arBefore = (deckHtml().match(/data-kind="arrow"[^>]*style="left: (\d+)px/) || [])[1];
+  await key('ArrowLeft', 'ArrowLeft', 37); await sleep(1500);
+  check('I arrow keys in the icon search do not move the selection', (deckHtml().match(/data-kind="arrow"[^>]*style="left: (\d+)px/) || [])[1] === arBefore && arBefore === '552');
+  b6 = await byTitle('house'); await click(b6.x, b6.y); await sleep(2000);
+  check('I icon inserted at the slide centre, 64px, Lucide markup', /data-kind="icon" style="left: 608px; top: 328px; width: 64px; height: 64px;[^"]*"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"[^>]*><path d="M15 21v-8/.test(deckHtml()));
+  b6 = await byTitle('插入图标'); await click(b6.x, b6.y); await sleep(300);
+  const di = await rectOf('.ppt-icons input[placeholder^="没有合适的"]'); await click(di.x, di.y);
+  await type('一只猫'); await enter(); await sleep(2000);
+  const dIcon = inbox().at(-1);
+  check('I "let Claude draw" sends a draw-icon intent', dIcon?.type === 'intent' && dIcon.kind === 'draw-icon' && dIcon.text === '一只猫' && dIcon.slide_id === 's-cover' && dIcon.rect?.w === 64, JSON.stringify(dIcon));
+  // images: file picker, paste, drop
+  const pngPath = path.join(SCRATCH, 'wide.png'); fs.writeFileSync(pngPath, png(960, 480));
+  const docN = await send('DOM.getDocument');
+  const inp = await send('DOM.querySelector', { nodeId: docN.result.root.nodeId, selector: '#ppt-ui input[type=file]' });
+  await send('DOM.setFileInputFiles', { files: [pngPath], nodeId: inp.result.nodeId }); await sleep(2500);
+  check('I picked image: long side 480, centred, stored under assets/', /data-kind="image" style="left: 400px; top: 240px; width: 480px; height: 240px;[^"]*"><img src="assets\/[0-9a-f]{12}\.png"/.test(deckHtml())
+    && fs.readdirSync(path.join(DECK, 'assets')).length === 1);
+  const nImg = () => (deckHtml().match(/data-kind="image"/g) || []).length;
+  const fileJs = `(async () => { const b = await (await fetch(document.querySelector('.obj[data-kind=image] img').src)).blob(); const dt = new DataTransfer(); dt.items.add(new File([b], 'p.png', {type: 'image/png'})); return dt; })()`;
+  await ev(`${fileJs}.then((dt) => document.body.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})))`); await sleep(2500);
+  check('I pasted image inserted, same bytes reuse the asset', nImg() === 2 && fs.readdirSync(path.join(DECK, 'assets')).length === 1);
+  await ev(`(() => { const s = document.getElementById('s-cover'), r = s.getBoundingClientRect(), k = r.width / 1280; window.__drop = {x: r.left + 200 * k, y: r.top + 200 * k}; })()`);
+  await ev(`${fileJs}.then((dt) => document.getElementById('s-cover').dispatchEvent(new DragEvent('drop', {dataTransfer: dt, clientX: __drop.x, clientY: __drop.y, bubbles: true, cancelable: true})))`); await sleep(2500);
+  check('I dropped image lands at the drop point (kept inside the slide)', nImg() === 3 && /data-kind="image" style="left: 0px; top: 80px; width: 480px; height: 240px;/.test(deckHtml()));
+  await ev(`(() => { const dt = new DataTransfer(); dt.items.add(new File(['x'], 'a.txt', {type: 'text/plain'})); document.getElementById('s-cover').dispatchEvent(new DragEvent('drop', {dataTransfer: dt, clientX: __drop.x, clientY: __drop.y, bubbles: true, cancelable: true})); })()`); await sleep(800);
+  check('I dropping a non-image explains and inserts nothing', nImg() === 3 && ((await ev(`document.querySelector('.ppt-toast:last-of-type')?.textContent`)) || '').includes('只支持'));
+  const ps = await rectOf('#b-cover-sub p'); await dblclick(ps.l + 20, ps.y); await sleep(300); // left end: the inserted images cover the middle
+  await ev(`${fileJs}.then((dt) => document.activeElement.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})))`); await sleep(2000);
+  await key('Escape', 'Escape', 27); await sleep(1500);
+  check('I paste image while typing inserts nothing', nImg() === 3);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

@@ -45,7 +45,11 @@
     const redo = btn(top, '↷', '重做', () => cb.redo());
     sep(top);
     btn(top, '+文字', '在当前页中央插入文字块', () => cb.addText());
-    for (const l of ['+形状', '+图片', '+图标']) btn(top, l, '下一版提供', () => {}).disabled = true;
+    const shapeBtn = btn(top, '+形状▾', '插入形状', () => openMenu(shapeBtn));
+    const file = el('input', null, top); file.type = 'file'; file.hidden = true; file.accept = 'image/png,image/jpeg,image/gif,image/webp';
+    file.addEventListener('change', () => { if (file.files[0]) cb.addImage(file.files[0]); file.value = ''; });
+    btn(top, '+图片', '插入图片（也可以粘贴或拖进幻灯片）', () => file.click());
+    const iconBtn = btn(top, '+图标', '插入图标', () => openIcons(iconBtn));
     sep(top);
     btn(top, '+页', '在当前页之后插入空白页', () => cb.addSlide());
     const delSlide = btn(top, '−页', '删除当前页', () => cb.removeSlide());
@@ -76,7 +80,37 @@
       const ar = anchor.getBoundingClientRect();
       cb.place(pop, { left: Math.max(8, Math.min(ar.left, innerWidth - 260)), top: ar.bottom + 4 });
     }
-    const popups = [pop];
+    // ---- shape menu: pick a kind, then drag (or click) on a slide ----
+    const SHAPES = [['rect', '矩形'], ['round', '圆角矩形'], ['ellipse', '椭圆'], ['triangle', '三角形'], ['line', '直线'], ['arrow', '箭头'], ['arrow2', '双向箭头']];
+    const menu = el('div', 'ppt-abs ppt-menu', ui); menu.hidden = true;
+    SHAPES.forEach(([k, l]) => btn(menu, l, `画${l}`, () => { menu.hidden = true; cb.armShape(k); }));
+    function openMenu(anchor) { const ar = anchor.getBoundingClientRect(); menu.hidden = false; cb.place(menu, { left: ar.left, top: ar.bottom + 4 }); }
+
+    // ---- icon panel: search the Lucide library, or describe one for Claude to draw ----
+    const icons = el('div', 'ppt-abs ppt-icons', ui); icons.hidden = true;
+    function openIcons(anchor) {
+      icons.textContent = ''; icons.hidden = false;
+      const q = el('input', null, icons); q.placeholder = '搜索图标（中文或英文）';
+      const grid = el('div', 'ppt-icon-grid', icons);
+      const show = () => {
+        grid.textContent = '';
+        if (!window.PPTIcons) { el('p', 'who', grid, '图标库未生成：运行 python tools/build_icons.py（"让 Claude 画"仍可用）'); return; }
+        for (const n of searchIcons(window.PPTIcons, window.PPTIconsZh || {}, q.value)) {
+          const ib = btn(grid, '', n, () => { icons.hidden = true; cb.addIcon(n); }, 'ppt-icon');
+          ib.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${window.PPTIcons[n].body}</svg>`;
+        }
+      };
+      q.addEventListener('input', show); show();
+      const r = el('div', 'ppt-row', icons);
+      const d = el('input', null, r); d.placeholder = '没有合适的？描述一下，让 Claude 画';
+      const go = () => { if (d.value.trim()) { icons.hidden = true; cb.drawIcon(d.value.trim()); } };
+      btn(r, '让 Claude 画', '让 Claude 画一个图标', go);
+      d.addEventListener('keydown', (k) => { if (k.key === 'Enter') { k.preventDefault(); go(); } });
+      const ar = anchor.getBoundingClientRect();
+      cb.place(icons, { left: Math.max(8, Math.min(ar.left, innerWidth - 348)), top: ar.bottom + 4 });
+      setTimeout(() => q.focus());
+    }
+    const popups = [pop, menu, icons];
     document.addEventListener('mousedown', (e) => {
       for (const p of popups) if (!p.hidden && !p.contains(e.target) && !e.target.closest('.ppt-colorbtn')) p.hidden = true;
     }, true);

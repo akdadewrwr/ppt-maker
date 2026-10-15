@@ -123,6 +123,8 @@ ppt/
 ```
 注入顺序：`… ops.js → icons.js → icons-zh.js → sketch.js → toolbar.js → editor.js`。
 
+`geom.js` 的 `hitBlocks` 现在也返回相交的对象（对象在前，块按由内到外），框选意图和草图意图都受益。
+
 `sketch.js` 暴露 `window.PPTSketch = { simplify, smoothPath, bounds, inkSVG, drawOnCanvas, open(slide, cb) }`。`open` 返回控制对象 `{ active, close() }`；`cb` 提供 `send(sketch)`、`keep(sketch)`、`place`、`ls`、`toast`。界面代码不直接改 deck，所有 deck 修改都经 editor.js 的 op。
 
 ## 7. 出错处理
@@ -134,7 +136,7 @@ ppt/
 | 草稿写不进浏览器 | 画笔模式照常可用，只是没有草稿 |
 | 画到页面外 | 坐标夹在画布内 |
 | 画笔模式中 Claude 改了文件 | 不刷新；退出画笔模式后刷新；草稿不受影响 |
-| 画笔模式中当前页被删除（Claude 或撤销） | 退出画笔模式，草稿保留（按页 id 存），提示"这一页已不存在" |
+| 画笔模式中当前页被删除（Claude 或撤销） | 画笔模式中页面不刷新、键盘不作用于 deck，所以这一页不会从画面上消失；退出后刷新，若该页已删除，草稿只是留在浏览器里不再被用到 |
 | `notes` 不合格（服务端） | 400，页面按现有逻辑丢弃该事件并提示 |
 
 ## 8. 测试

@@ -16,6 +16,7 @@ argument-hint: <deck 名字或主题>
 - 处理 intent / answer / lint 之前先标记：`python ppt/server.py --reply "decks/<名字>" <id> --ack`
 - **intent**：有 `shot` 就用 Read 看截图（路径相对 deck 目录）。先重新读 deck.html，再只改 `blocks` 列出的块或对象（`o-` 开头的是浮动对象；第一个是最内层）；`blocks` 为空时按 `cells`（列范围/行范围）在该区域新建块。不动无关块。
 - **intent 且 `kind` 为 `draw-icon`**：用户想要一个图标库里没有的图标，`text` 是描述。在 `slide_id` 页按 `rect` 的位置和大小新建一个图标对象（格式见规则 10），自己画 24×24 的线条图：只用 `path / circle / rect / line / polyline`，不写颜色和线宽（它们由对象的 `color`、`stroke-width` 控制），风格与 Lucide 一致（圆角端点、2px 线、简洁）。新 id 以 `o-` 开头。
+- **intent 且 `kind` 为 `sketch`**：用户画了草图。用 Read 看 `shot`（整页截图，草图画在上面）：线条和框表示布局意图，箭头表示关系或流程；`notes` 是用户打的标注，以它的原文为准，不要从图里认字。不要把手绘线条原样搬进 deck，要做成正式的块、表格、形状、箭头或图标，并遵守格式规则。已有页只改 `blocks` 列出的块和对象，以及草图范围（`rect`）内需要新建的内容，除非用户的话另有说明；空白页（没有块）按草图生成整页。看不懂就在回执里问一个具体问题。
 - **intent 带 `quote`**（用户在改字模式下选中文字后右键发来的）：只改这段原文。在 `blocks[0]` 里找 `quote.text`；出现多次时用 `quote.before` / `quote.after` 定位。只替换这一处，块里其他内容一律不动；没有截图，也不用看。原文已找不到时，在回执里问用户，不要猜。
 - **answer**：`re` 指向原 intent；结合原意图、你之前的回执和这条回答继续改。
 - **lint**：修 `issues`：overflow → 精简文字、减小字号或扩大 grid-area；overlap → 调整 grid-area；missing-id / duplicate-id → 补或改 id；obj-geometry → 给对象补齐 `left/top/width/height`；obj-outside → 把对象移回画布内（必要时缩小）。同一块同一问题最多自动修 2 次，之后只回执说明，让用户决定。
@@ -39,5 +40,6 @@ argument-hint: <deck 名字或主题>
     - 箭头：`data-shape` 为 `line|arrow|arrow2`；svg `viewBox="0 0 宽 高"` 与对象尺寸一致，里面一条 `<line>`（端点是对象内坐标，四周留 8px）加箭头 `<polyline … fill="none">`。箭头不旋转（方向由两端点决定），线条颜色和粗细写在对象的 `stroke / stroke-width` 上。
     - 图标：`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">…</svg>`，颜色写对象的 `color`，线宽写 `stroke-width:2`。
     - 图片：`<img src="assets/…" alt="">`，只用 `assets/` 下已有的文件。
+    - 笔迹：`data-kind="ink"`，内含 `<svg viewBox="0 0 宽 高" preserveAspectRatio="none">` 与若干 `<path … vector-effect="non-scaling-stroke">`、`<text>`。这是用户亲手画的，不要主动修改或删除；用户对它"问 Claude"时按笔迹的意思生成正式内容，是否删除原笔迹按用户的话决定，没说就保留。
     - `#base` 里的 `.obj` 规则由页面维护，不要改。唯一例外：你要新建对象而 `#base` 里还没有 `.obj {` 规则（旧 deck）时，在 `#base` 末尾原样补上这四行：
       `.obj { position:absolute; box-sizing:border-box; }` / `.obj > svg, .obj > img { display:block; width:100%; height:100%; overflow:visible; }` / `.obj > img { object-fit:cover; border-radius:inherit; }` / `.obj-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:8px; }`

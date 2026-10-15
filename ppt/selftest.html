@@ -32,6 +32,9 @@
 </section>
 <script src="geom.js"></script>
 <script src="ops.js"></script>
+<script src="icons.js"></script>
+<script src="icons-zh.js"></script>
+<script src="toolbar.js"></script>
 <script>
   const G = PPTGeom, log = document.getElementById('log'); let pass = 0, total = 0;
   function check(name, got, want) {
@@ -132,6 +135,16 @@
   const d1 = mk(), d2 = mk();
   SEQ.forEach((op) => { O.apply(d1, op); O.apply(d2, op); });
   check('ops deterministic on two copies', ser(d1) === ser(d2) && ser(d1) !== ser(mk()), true);
+
+  // ---- 2b: icons ----
+  const I = window.PPTIcons || {}, Z = window.PPTIconsZh || {}, S = window.PPTToolbar?.searchIcons;
+  check('icons library loaded', Object.keys(I).length > 1500, true);
+  check('every zh word maps to real icons', Object.entries(Z).flatMap(([k, v]) => v.split(' ').filter((n) => !I[n]).map((n) => `${k}:${n}`)), []);
+  check('zh table has ~150 words', Object.keys(Z).length >= 150, true);
+  check('search 房子 -> house first', S && S(I, Z, '房子')[0], 'house');
+  check('search english name / tag', S && [S(I, Z, 'arrow-right').includes('arrow-right'), S(I, Z, 'home').includes('house')], [true, true]);
+  check('search empty = common icons, all real', S && (() => { const r = S(I, Z, ''); return r.length > 50 && r.length <= 120 && r.every((n) => I[n]); })(), true);
+  check('search nonsense = nothing', S && S(I, Z, 'zzqqxx'), []);
 
   // ---- 2b: floating objects ----
   const OSRC = '<!doctype html><html><head><style id="base">.slide { }</style></head><body>\n<section class="slide" id="u1"><div class="block" id="ub" style="grid-area:1/1/3/5">b</div></section>\n</body></html>';

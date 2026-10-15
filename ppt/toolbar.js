@@ -5,6 +5,14 @@
   const SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 56, 72];
   const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
+  function searchIcons(icons, zh, q, limit = 120) { // zh hits first, then names/tags containing the query
+    q = q.trim().toLowerCase();
+    const out = new Set(Object.entries(zh).filter(([k]) => !q || q.includes(k) || k.includes(q))
+      .flatMap(([, v]) => v.split(' ')).filter((n) => icons[n]));
+    if (q) for (const n in icons) if (n.includes(q) || icons[n].tags.includes(q)) out.add(n);
+    return [...out].slice(0, limit);
+  }
+
   function create(ui, cb) {
     const el = (tag, cls, parent, text) => {
       const e = document.createElement(tag);
@@ -117,5 +125,5 @@
     };
   }
 
-  window.PPTToolbar = { create };
+  window.PPTToolbar = { create, searchIcons };
 })();

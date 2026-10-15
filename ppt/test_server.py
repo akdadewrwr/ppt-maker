@@ -5,6 +5,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+import build_icons
+
 TEMPLATE = Path(__file__).resolve().parent / "template.html"
 
 
@@ -318,6 +321,28 @@ class HistoryTests(ServerCase):
             h2 = server.History(self.deck)
         self.assertEqual((h2.cur, len(h2.rows)), (self.srv.history.cur, len(self.srv.history.rows)))
         self.assertTrue(h2.info()["canRedo"])
+
+
+class BuildIconsTests(unittest.TestCase):
+    def test_build_from_package(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        pkg = tmp / "package"
+        (pkg / "icons").mkdir(parents=True)
+        (pkg / "icons" / "house.svg").write_text(
+            '<!-- @license lucide-static v9.9.9 - ISC -->\n<svg\n  class="lucide lucide-house"\n  viewBox="0 0 24 24"\n>\n'
+            '  <path d="M3 10a2 2 0 0 1 1 1" />\n  <circle cx="12" cy="12" r="3" />\n</svg>\n', encoding="utf-8")
+        (pkg / "icons" / "no-tags.svg").write_text('<svg viewBox="0 0 24 24"><path d="M1 1h2"/></svg>', encoding="utf-8")
+        (pkg / "tags.json").write_text('{"house": ["home", "living"]}', encoding="utf-8")
+        (pkg / "package.json").write_text('{"version": "9.9.9"}', encoding="utf-8")
+        (pkg / "LICENSE").write_text("ISC License", encoding="utf-8")
+        self.assertEqual(build_icons.build(pkg, tmp / "icons.js", tmp / "LICENSE-lucide"), 2)
+        js = (tmp / "icons.js").read_text(encoding="utf-8")
+        self.assertIn("lucide-static 9.9.9", js.splitlines()[0])
+        data = json.loads(js.split("window.PPTIcons = ", 1)[1].strip().rstrip(";"))
+        self.assertEqual(data["house"], {"tags": "home living", "body": '<path d="M3 10a2 2 0 0 1 1 1"/><circle cx="12" cy="12" r="3"/>'})
+        self.assertEqual(data["no-tags"]["tags"], "")
+        self.assertEqual((tmp / "LICENSE-lucide").read_text(encoding="utf-8"), "ISC License")
 
 
 class CliTests(ServerCase):

@@ -1,28 +1,20 @@
 ## 上一轮完成
-- 2b 浮动对象全部完成，含审查修复：分支 feat/floating-objects-2b（4d0eff0），已推送。
-- 测试：server 45 OK、selftest 76/76、e2e 95/95；真实会话验收通过，验收副本已删除。
+- 2b 已快进合并到 main（38eaff1）并推送，2b 分支已删除；合并后测试全绿。
+- 修完 6 个延后的小问题和 2a 的撤销标签时序问题：分支 fix/2b-minors（4d7850f，已推送，尚未合并）。
+- 测试：server 47 OK、selftest 78/78、e2e 98/98。
 
 ## 关键结论
-- 审查修复：
-  - C1：图标面板隐藏后，输入框里留下的文字会让页面永远不刷新。
-  - I1：Claude 画的箭头（旋转过、缺 data-shape 或 viewBox 不符）改为按外框移动。
-  - I2：在旧 deck 里"让 Claude 画"时，先补上对象样式；ppt.md 允许 Claude 补这四行规则。
-  - I3：冲突后重放的用户操作不再触发 lint。
-  - M4：超限的请求体分块丢弃，不再整体缓存在内存里。
-- 延后的小问题：
-  - M1：没有 id 的对象可以拖动，但保存失败；
-  - M2：旋转过、又缺 px 尺寸的对象，一移动就变大；
-  - M3：非 deg 单位的旋转在第一次移动时丢失；
-  - M5：静态文件没有加 nosniff；
-  - M6：改字时插入对象，改字模式不退出；
-  - M7：焦点在图标搜索框里时，Esc 关不掉面板。
-- 2a 遗留的时序问题：Claude 回执若早于快照，撤销标签会写成"Claude 修改"。
+- 没有 id 的对象：只能选中，拖动、微调、删除都会提示"等 Claude 补上 id"。
+- geomOf 缺 px 尺寸时，按计算尺寸和中心点推算（旋转后不再变大）；也认 turn/rad/grad 单位。
+- 静态响应加了 nosniff；改字时插入对象会先退出改字模式；在面板里按 Esc 能关闭面板。
+- 撤销标签：取上次快照之后 outbox 里最近 ack 或回复的事件，回执来得比快照早也能标对。
+- 修了 e2e 里两条从未真正测到东西的检查：b-cover-sub 被回复气泡盖住，改为在 b-p3-sub 上测，并先确认已进入改字模式。
 
 ## 改动文件
-- ppt/ops.js geom.js toolbar.js editor.js editor.css server.py template.html icons.js icons-zh.js vendor/LICENSE-lucide；tools/build_icons.py；tests/e2e.mjs；selftest；test_server；ppt.md；spec
+- ppt/editor.js geom.js toolbar.js server.py；ppt/selftest.html test_server.py；tests/e2e.mjs
 
 ## 当前 blocker
-- 等用户在 finishing 菜单里选：合并到 main / 开 PR / 先保留。
+- 等用户决定 fix/2b-minors 是否合并到 main。
 
 ## 下一步
-- 按用户的选择处理分支；然后是手绘草图 → 知识库 → 导出 pptx。
+- 合并后进入下一个子项目：手绘草图（先 brainstorming → spec）；之后是知识库 → 导出 pptx。

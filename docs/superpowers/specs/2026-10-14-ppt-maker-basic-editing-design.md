@@ -27,7 +27,8 @@
 ppt/
 ├─ ops.js         新：所有直接修改操作（纯 DOM 函数，可作用于任意 Document）
 ├─ toolbar.js     新：顶栏、浮动栏、取色弹层、选中框与手柄、拖动/拉伸
-├─ icons.js       新（2b）：Lucide 图标数据，由脚本生成
+├─ icons.js       新（2b）：Lucide 1.57.0 图标数据，由 tools/build_icons.py 生成并入库
+├─ icons-zh.js    新（2b）：中文搜索词对照表
 ├─ editor.js      改：选中模型；保存改为"执行 op 并持久化"
 ├─ editor.css     改：工具栏、手柄、选中框样式
 ├─ server.py      改：历史快照、撤销/重做/历史接口、图片上传接口
@@ -37,7 +38,7 @@ tools/build_icons.py  新（2b）：Lucide SVG → ppt/icons.js
 tests/e2e.mjs         新：浏览器驱动测试脚本（仅开发用，需 Node ≥ 22 与 Edge/Chrome）
 ```
 
-`server.py` 注入顺序变为：`html-to-image.js` → `geom.js` → `ops.js` → `icons.js`（存在时）→ `toolbar.js` → `editor.js`。
+`server.py` 注入顺序变为：`html-to-image.js` → `geom.js` → `ops.js` → `icons.js`（存在时）→ `icons-zh.js` → `toolbar.js` → `editor.js`。
 
 ### 2.2 操作模型（方案 A）
 
@@ -58,7 +59,7 @@ tests/e2e.mjs         新：浏览器驱动测试脚本（仅开发用，需 Nod
 
 | op | args | 说明 |
 |---|---|---|
-| `setHTML` | `html` | 替换块或对象内文字区的 innerHTML（改字、文字格式） |
+| `setHTML` | `html`, `text?` | 替换块的 innerHTML（改字、文字格式）；`text:true` 时写入对象的 `.obj-text`（为空则删除） |
 | `setStyle` | `{prop: value \| null}` | 设置或清除内联样式；只允许白名单属性（见 3.2） |
 | `setGrid` | `"r1/c1/r2/c2"` | 块的 grid-area，夹在 1–10 / 1–17 之内 |
 | `insertBlock` | `{id, slideId, grid, html}` | 新建块（`+文字`） |
@@ -66,9 +67,9 @@ tests/e2e.mjs         新：浏览器驱动测试脚本（仅开发用，需 Nod
 | `insertSlide` | `{id, afterId, html}` | 插入一页 |
 | `removeSlide` | — | 删除一页 |
 | `insertObj` | `{id, slideId, kind, geom, html}` | 新建浮动对象（2b） |
-| `setGeom` | `{x, y, w, h, rot}` | 浮动对象的位置、大小、旋转（2b） |
-| `setZ` | `"top" \| "bottom"` | 对象在本页对象中的层级（2b） |
-| `setArrow` | `{x1, y1, x2, y2}` | 箭头两端点，换算为 geom（2b） |
+| `setGeom` | `{x, y, w, h, rot}` | 浮动对象的位置、大小、旋转；形状有已知 `data-shape` 时按新尺寸重画 SVG，否则只改外框（2b） |
+| `setZ` | `{z: "top" \| "bottom"}` | 对象在本页对象中的层级（2b） |
+| `setArrow` | `{x1, y1, x2, y2}` | 箭头两端点，换算为 geom；箭头的移动也用它（2b） |
 | `ensureBase` | — | `#base` 缺少 3.5 中的对象样式时补上；已有则不变（2b） |
 
 新元素的 id 由页面生成：`b-` / `o-` / `s-` 前缀加 6 位随机字母数字，并在当前文档中查重。
@@ -79,7 +80,7 @@ tests/e2e.mjs         新：浏览器驱动测试脚本（仅开发用，需 Nod
 允许固定色值（如 `#ef4444`）。"颜色只用主题变量"降级为 Claude 自行生成内容时的**建议**，不再是硬性规则。用户选的颜色一律写固定值，整体换主题时不会跟着变。
 
 ### 3.2 块样式
-块的 `style` 中允许：`grid-area`、`background`、`border`、`border-radius`、`box-shadow`、`text-align`、`color`、`font-size`、`font-weight`、`font-style`、`text-decoration`、`opacity`（后三项用于不进改字模式时整块加粗 / 斜体 / 下划线）。`setStyle` 只接受这些属性（浮动对象另加 `left`、`top`、`width`、`height`、`transform`、`z-index`）。
+块的 `style` 中允许：`grid-area`、`background`、`border`、`border-radius`、`box-shadow`、`text-align`、`color`、`font-size`、`font-weight`、`font-style`、`text-decoration`、`opacity`（后三项用于不进改字模式时整块加粗 / 斜体 / 下划线）。`setStyle` 只接受这些属性（浮动对象不用 `grid-area`，另加 `left`、`top`、`width`、`height`、`transform`、`z-index`、`fill`、`stroke`、`stroke-width`；后三项供形状、箭头、图标的 SVG 继承）。
 
 ### 3.3 文字格式
 块内允许 `<b>`、`<i>`、`<u>`，以及 `<span style="color:…">` / `<span style="font-size:…px">`。不使用 `<font>`。字号不用 `execCommand('fontSize')`（只有 1–7 号），由页面给选区包一层 `span`。
@@ -99,7 +100,8 @@ tests/e2e.mjs         新：浏览器驱动测试脚本（仅开发用，需 Nod
 ### 3.5 `#base` 新增
 ```css
 .obj { position:absolute; box-sizing:border-box; }
-.obj > svg, .obj > img { display:block; width:100%; height:100%; }
+.obj > svg, .obj > img { display:block; width:100%; height:100%; overflow:visible; }
+.obj > img { object-fit:cover; border-radius:inherit; }
 .obj-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:8px; }
 ```
 已有 deck 的 `#base` 缺这几条时，页面在首次插入对象的同一次保存中补上（`ensureBase` 也作为 op 执行）。旧 deck 其余部分不受影响。
@@ -189,7 +191,7 @@ decks/<名字>/.ppt/history/
 
 ### 6.2 图标
 - `tools/build_icons.py` 读取 Lucide 官方 SVG 目录（一次性下载的 `lucide-static` 包），生成 `ppt/icons.js`：`{name: {tags, body}}`。同时生成 `ppt/vendor/LICENSE-lucide`。
-- 面板：搜索框（匹配名称、标签和内置中英对照表）+ 分类 + 网格。内置对照表 `ppt/icons-zh.js` 约 150 个常用词。
+- 面板：搜索框（匹配名称、标签和内置中英对照表）+ 网格；搜索为空时显示对照表里的常用图标（Lucide 包里没有分类数据，所以不做分类）。内置对照表 `ppt/icons-zh.js` 约 150 个常用词。
 - 插入：内联 SVG，`stroke="currentColor"`，颜色写在对象的 `color` 上，默认 64×64。
 - "让 Claude 画一个"：输入描述后发出意图 `{type:"intent", kind:"draw-icon", text, slide_id, rect}`，`rect` 为当前页中央 64×64。Claude 按 3.4 的格式新建 `data-kind="icon"` 的对象。
 

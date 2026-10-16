@@ -281,6 +281,37 @@ class AssetTests(ServerCase):
         self.assertFalse((self.deck / "assets").exists())
 
 
+class NewDeckTests(unittest.TestCase):  # a new deck comes from the template, made by the program, inside the project only
+    def test_missing_deck_is_made_from_the_template_in_place(self):
+        proj = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, proj, True)
+        deck = proj / "decks" / "试用"
+        self.assertTrue(server.ensure_deck(deck))
+        tpl = (Path(server.__file__).parent / "template.html").read_text(encoding="utf-8")
+        self.assertEqual((deck / "deck.html").read_text(encoding="utf-8"), tpl)
+        self.assertEqual(sorted(p.relative_to(proj).as_posix() for p in proj.rglob("*")), ["decks", "decks/试用", "decks/试用/deck.html"])
+
+    def test_starting_the_server_on_a_missing_deck_makes_it(self):
+        proj = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, proj, True)
+        deck = proj / "decks" / "新稿"
+        out = io.StringIO()
+        with mock.patch.object(server, "make_server", side_effect=SystemExit("stop")), contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            server.main(["--no-open", str(deck)])
+        self.assertTrue((deck / "deck.html").is_file())
+        self.assertIn("已从模板新建", out.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):  # other commands still need a real deck
+            server.main(["--tail", str(proj / "decks" / "没有")])
+        self.assertFalse((proj / "decks" / "没有").exists())
+
+    def test_an_existing_deck_is_left_alone(self):
+        proj = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, proj, True)
+        (proj / "deck.html").write_text("<p>mine</p>", encoding="utf-8")
+        self.assertFalse(server.ensure_deck(proj))
+        self.assertEqual((proj / "deck.html").read_text(encoding="utf-8"), "<p>mine</p>")
+
+
 class DrainTests(unittest.TestCase):
     def test_drain_discards_in_chunks(self):  # review M4: an oversized body must not be buffered whole
         reads = []

@@ -643,6 +643,16 @@ class Server(ThreadingHTTPServer):
         super().server_close()
 
 
+def ensure_deck(deck):
+    """A missing deck is made from the template next to this file, in place: never copied from anywhere else."""
+    f = Path(deck) / "deck.html"
+    if f.exists():
+        return False
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes((Path(__file__).parent / "template.html").read_bytes())
+    return True
+
+
 def make_server(deck, port=8765, token=None, tries=20):
     for p in range(port, port + tries):
         try:
@@ -681,6 +691,8 @@ def main(argv=None):
     ap.add_argument("--kb-fail", action="store_true", help="mark a kb item failed: <deck> <scope> <id> <reason>")
     a = ap.parse_args(argv)
     deck = Path(a.deck).resolve()
+    serving = not (a.tail or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail)
+    made = serving and ensure_deck(deck)  # only starting the server makes a deck; other commands need a real one
     if not (deck / "deck.html").is_file():
         ap.error(f"{deck / 'deck.html'} not found")
     if hasattr(sys.stdout, "reconfigure"):
@@ -727,6 +739,8 @@ def main(argv=None):
         return reply(deck, a.rest[0], " ".join(a.rest[1:]), a.ack)
     if a.tail:
         return tail(deck, lambda s: print(s, flush=True))
+    if made:
+        print(f"已从模板新建 {deck / 'deck.html'}", flush=True)
     srv = make_server(deck, a.port)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.token}"
     print(f"ppt-maker serving {deck.name} at {url}", flush=True)

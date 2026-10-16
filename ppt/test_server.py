@@ -1,4 +1,4 @@
-import contextlib, http.client, io, json, os, shutil, socket, subprocess, sys, tempfile, threading, unittest, zipfile
+import base64, contextlib, http.client, io, json, os, shutil, socket, subprocess, sys, tempfile, threading, unittest, zipfile
 import time as _time
 from pathlib import Path
 from unittest import mock
@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
 import kb
 import importer
+import exporter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import build_icons
@@ -377,6 +378,92 @@ class DetachTests(unittest.TestCase):  # the server runs on its own, not as a Cl
         self.assertIn("改好了11", recent[-1])
         self.assertTrue(any(l.startswith("e12 ") for l in lines))
         self.assertTrue(any("服务已停止" in l for l in lines))
+
+
+PNG_1PX = base64.b64encode(bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")).decode()
+
+
+def sample_export():
+    run = lambda t, **k: {"t": t, "font": "Microsoft YaHei", "size": 40, "color": "112233", "a": 1, "b": False, "i": False, "u": False, "s": False, **k}
+    para = lambda *runs, **k: {"align": "l", "lh": None, "bullet": "", "level": 0, "runs": list(runs), **k}
+    return {"slides": [
+        {"id": "s-cover", "bg": "0f172a", "items": [
+            {"k": "box", "x": 80, "y": 80, "w": 400, "h": 200, "fill": "1e293b", "fa": 1, "line": None, "lw": 0, "r": 12},
+            {"k": "text", "x": 100, "y": 100, "w": 600, "h": 60, "paras": [para(run("季度复盘", b=True), {"br": True}, run("第二行"), align="c")]},
+            {"k": "text", "x": 100, "y": 300, "w": 600, "h": 90, "paras": [para(run("要点一"), bullet="•"), para(run("要点二"), bullet="•", level=1)]},
+            {"k": "shape", "shape": "ellipse", "x": 700, "y": 100, "w": 200, "h": 100, "rot": 30, "fill": "38bdf8", "fa": 1, "line": "ffffff", "lw": 2,
+             "paras": [para(run("圆", size=20), align="c")]},
+            {"k": "line", "x1": 100, "y1": 600, "x2": 500, "y2": 600, "color": "fbbf24", "lw": 3, "start": False, "end": True},
+        ]},
+        {"id": "s-data", "bg": None, "items": [
+            {"k": "table", "x": 80, "y": 80, "w": 400, "h": 80, "cols": [200, 200], "rows": [40, 40], "border": "cccccc", "bw": 1,
+             "cells": [[{"paras": [para(run("指标", size=16))], "fill": "eeeeee"}, {"paras": [para(run("数值", size=16))], "fill": None}],
+                       [{"paras": [para(run("用户", size=16))], "fill": None}, {"paras": [para(run("820 万", size=16))], "fill": None}]]},
+            {"k": "image", "x": 600, "y": 80, "w": 100, "h": 100, "src": "data:image/png;base64," + PNG_1PX, "crop": {"l": 0.1, "t": 0, "r": 0.1, "b": 0}},
+            {"k": "raster", "x": 600, "y": 300, "w": 100, "h": 100, "src": "data:image/png;base64," + PNG_1PX, "id": "b-chart", "why": "SVG 插图"},
+        ]}], "skipped": [{"id": "b-ext", "why": "图片取不到"}]}
+
+
+class ExporterTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_build_makes_editable_native_objects(self):
+        from pptx import Presentation
+        from pptx.util import Emu
+        out = self.tmp / "out" / "d.pptx"
+        out.parent.mkdir()
+        rep = exporter.build(sample_export(), out)
+        self.assertEqual({k: rep[k] for k in ("slides", "text", "shape", "table", "image")}, {"slides": 2, "text": 2, "shape": 3, "table": 1, "image": 1})  # box + ellipse + line
+        self.assertEqual(rep["raster"], [{"id": "b-chart", "why": "SVG 插图"}])
+        self.assertEqual(rep["skipped"], [{"id": "b-ext", "why": "图片取不到"}])
+        self.assertEqual([p.name for p in out.parent.iterdir()], ["d.pptx"])  # no temp file left
+        prs = Presentation(str(out))
+        self.assertEqual((prs.slide_width, prs.slide_height), (Emu(1280 * 9525), Emu(720 * 9525)))
+        s1, s2 = prs.slides
+        self.assertEqual(str(s1.background.fill.fore_color.rgb), "0F172A")
+        tb = [sh for sh in s1.shapes if sh.has_text_frame and sh.text_frame.text.startswith("季度复盘")][0]
+        self.assertEqual((tb.left, tb.top, tb.width), (Emu(100 * 9525), Emu(100 * 9525), Emu(600 * 9525)))
+        r0 = tb.text_frame.paragraphs[0].runs[0]
+        self.assertEqual((r0.font.size.pt, r0.font.bold, str(r0.font.color.rgb), r0.font.name), (30.0, True, "112233", "Microsoft YaHei"))
+        self.assertIn("\v", tb.text_frame.paragraphs[0].text)  # the <br> is a line break inside the paragraph
+        self.assertIn('typeface="Microsoft YaHei"', r0._r.xml.split("<a:ea")[1][:60])  # east asian font set too
+        bul = [sh for sh in s1.shapes if sh.has_text_frame and sh.text_frame.text.startswith("要点一")][0].text_frame.paragraphs
+        self.assertIn("buChar", bul[0]._p.xml)
+        self.assertEqual(bul[1].level, 1)
+        ell = [sh for sh in s1.shapes if sh.has_text_frame and sh.text_frame.text == "圆"][0]
+        from pptx.enum.shapes import MSO_SHAPE
+        self.assertEqual((ell.auto_shape_type, ell.rotation), (MSO_SHAPE.OVAL, 30.0))
+        self.assertNotIn("<p:style>", ell._element.xml)  # no theme style: no surprise blue fill or shadow
+        line = [sh for sh in s1.shapes if sh.shape_type == 9 or sh.__class__.__name__ == "Connector"][0]
+        self.assertIn("tailEnd", line._element.xml)
+        self.assertNotIn("headEnd", line._element.xml)
+        tbl = [sh for sh in s2.shapes if sh.has_table][0].table
+        self.assertEqual([[c.text for c in r.cells] for r in tbl.rows], [["指标", "数值"], ["用户", "820 万"]])
+        pics = [sh for sh in s2.shapes if sh.shape_type == 13]
+        self.assertEqual(len(pics), 2)
+        self.assertAlmostEqual(pics[0].crop_left, 0.1, places=3)
+
+    def test_summary_names_what_became_pictures(self):
+        rep = {"slides": 4, "text": 18, "shape": 6, "table": 1, "image": 2, "raster": [{"id": "b-chart", "why": "SVG 插图"}], "skipped": []}
+        self.assertEqual(exporter.summary(rep), "导出完成：4 页，18 个文本框、6 个形状、1 个表格、2 张图片；1 处转成了图片（b-chart：SVG 插图）")
+        self.assertEqual(exporter.summary({**rep, "raster": [], "skipped": [{"id": "x", "why": "坏"}]}),
+                         "导出完成：4 页，18 个文本框、6 个形状、1 个表格、2 张图片；1 处没能导出（x：坏）")
+
+    def test_a_bad_item_is_skipped_not_fatal(self):
+        data = {"slides": [{"id": "s", "bg": None, "items": [{"k": "image", "x": 0, "y": 0, "w": 9, "h": 9, "src": "data:text/html;base64,PGI+", "crop": None},
+                                                            {"k": "nonsense"}]}]}
+        rep = exporter.build(data, self.tmp / "x.pptx")
+        self.assertEqual([s["why"][:5] for s in rep["skipped"]], ["无法生成：", "无法生成："])
+
+    def test_missing_python_pptx_is_reported(self):
+        with mock.patch.dict(sys.modules, {"pptx": None}):
+            with self.assertRaises(exporter.Missing) as c:
+                exporter.build(sample_export(), self.tmp / "y.pptx")
+        self.assertEqual(str(c.exception), "导出需要 python-pptx：pip install python-pptx")
 
 
 class DrainTests(unittest.TestCase):

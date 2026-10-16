@@ -515,6 +515,26 @@ class ExportApiTests(ServerCase):
         c.close()
 
 
+@unittest.skipUnless(server.browser(), "needs Edge or Chrome")
+class ExportCliTests(unittest.TestCase):
+    def test_export_from_the_terminal(self):
+        proj = Path(tempfile.mkdtemp())
+        deck = proj / "decks" / "导出"
+        self.addCleanup(shutil.rmtree, proj, True)
+        self.addCleanup(subprocess.run, [sys.executable, SERVER_PY, "--stop", str(deck)], capture_output=True, timeout=30)
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        miss = subprocess.run([sys.executable, SERVER_PY, "--export", str(deck)], capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
+        self.assertNotEqual(miss.returncode, 0)  # nothing to export: no deck is made for it
+        self.assertFalse(deck.exists())
+        server.ensure_deck(deck)
+        r = subprocess.run([sys.executable, SERVER_PY, "--export", "--port", "8860", str(deck)], capture_output=True, text=True, encoding="utf-8", timeout=200, env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        files = list((deck / "export").glob("*.pptx"))
+        self.assertEqual(len(files), 1)
+        self.assertIn(str(files[0].resolve()), r.stdout)
+        self.assertIn("导出完成：1 页", r.stdout)
+
+
 class DrainTests(unittest.TestCase):
     def test_drain_discards_in_chunks(self):  # review M4: an oversized body must not be buffered whole
         reads = []

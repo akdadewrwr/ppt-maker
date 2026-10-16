@@ -290,6 +290,7 @@
   }
   setInterval(poll, 1000);
   poll();
+  if (new URLSearchParams(location.search).get('export') === '1') document.fonts.ready.then(() => setTimeout(exportPptx, 800)); // server.py --export
 
   // ---- rendering: status pill + per-intent marks and reply bubbles ----
   function render() {

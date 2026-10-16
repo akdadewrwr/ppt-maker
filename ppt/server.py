@@ -5,7 +5,7 @@
   python ppt/server.py --tail <deck_dir>                        print pending/new events, one line each
   python ppt/server.py --reply <deck_dir> <event_id> [text] [--ack]
 """
-import argparse, base64, hashlib, http.client, json, mimetypes, os, re, secrets, signal, subprocess, sys, threading, time, webbrowser
+import argparse, base64, hashlib, http.client, json, mimetypes, os, re, secrets, shutil, signal, subprocess, sys, tempfile, threading, time, webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -765,6 +765,45 @@ def stop_server(deck):
     print(f"{deck.name}: 服务已停止" if info else f"{deck.name}: 没有在运行的服务", flush=True)
 
 
+BROWSERS = ("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+            "C:/Program Files/Google/Chrome/Application/chrome.exe", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/microsoft-edge")
+
+
+def browser():
+    return next((p for p in (os.environ.get("PPT_BROWSER"), *BROWSERS) if p and Path(p).is_file()), None)
+
+
+def export_cli(deck, port):
+    """Export from the terminal: the same page-side export, driven by a headless browser."""
+    exe = browser()
+    if not exe:
+        raise SystemExit("找不到 Edge 或 Chrome：设置环境变量 PPT_BROWSER 指向浏览器")
+    info = live_server(deck)
+    if not info:
+        detach(deck, port, False)
+        info = live_server(deck)
+    res_file = runtime(deck) / "export.json"
+    res_file.unlink(missing_ok=True)
+    prof = Path(tempfile.mkdtemp(prefix="ppt-export-"))
+    p = subprocess.Popen([exe, "--headless=new", "--disable-gpu", f"--user-data-dir={prof}", "--window-size=1400,900", info["url"] + "&export=1"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(480):
+            if res_file.exists():
+                res = json.loads(res_file.read_text(encoding="utf-8"))
+                print(res["file"], flush=True)
+                return print(res["summary"], flush=True)
+            if p.poll() is not None:
+                break
+            time.sleep(0.25)
+        raise SystemExit("导出没有完成（120 秒内没有结果）；在浏览器里点\"导出 PPT\"看看提示")
+    finally:
+        p.kill()
+        p.wait(10)
+        shutil.rmtree(prof, ignore_errors=True)
+
+
 def idle_exit(srv, idle):
     while not srv.stopped.wait(min(idle / 2, 30)):
         if time.time() - srv.last_seen > idle:
@@ -812,9 +851,10 @@ def main(argv=None):
     ap.add_argument("--kb-fail", action="store_true", help="mark a kb item failed: <deck> <scope> <id> <reason>")
     ap.add_argument("--detach", action="store_true", help="start the server as its own process, or reuse the running one")
     ap.add_argument("--stop", action="store_true", help="stop this deck's server")
+    ap.add_argument("--export", action="store_true", help="export this deck to .pptx from the terminal")
     a = ap.parse_args(argv)
     deck = Path(a.deck).resolve()
-    serving = not (a.tail or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail or a.stop)
+    serving = not (a.tail or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail or a.stop or a.export)
     made = serving and ensure_deck(deck)  # only starting the server makes a deck; other commands need a real one
     if not (deck / "deck.html").is_file():
         ap.error(f"{deck / 'deck.html'} not found")
@@ -822,6 +862,8 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding="utf-8")
     if a.stop:
         return stop_server(deck)
+    if a.export:
+        return export_cli(deck, a.port)
     if a.import_src:
         if not a.rest or (len(a.rest) > 1 and a.rest[1] not in importer.MODES):
             ap.error("--import needs <path-or-url> [append|replace]")

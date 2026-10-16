@@ -9,8 +9,9 @@ import argparse, base64, hashlib, http.client, json, mimetypes, os, re, secrets,
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
+import exporter
 import importer
 import kb
 
@@ -22,7 +23,8 @@ MAX_TEXT = 4000
 MAX_NOTES = 50
 MAX_NOTE = 200
 MAX_ITEMS = 30  # intents in one batch
-STREAMED = ("/api/kb/file", "/api/import")
+STREAMED = ("/api/kb/file", "/api/import", "/api/export")
+MAX_EXPORT = 50 * 1024 * 1024
 ITEM_FIELDS = {"slide", "slide_id", "rect", "cells", "blocks", "text", "shot", "kind", "notes", "quote", "kb"}  # uploads written to disk as they arrive
 EVENT_TYPES = {"intent", "answer", "lint"}  # need a reply; "edit" is notify-only
 REPLY_TYPES = EVENT_TYPES | {"kb", "import"}  # kb events are written by the server, not posted by the page
@@ -447,6 +449,30 @@ class Handler(BaseHTTPRequestHandler):
             drain(self.rfile, self.stream_len)
         self.stream_len = 0
 
+    def export_post(self):
+        deck = self.server.deck
+        if self.stream_len > MAX_EXPORT:
+            self.discard_stream()
+            return self.send(413, {"error": "导出数据超过 50MB（图片太多），请减少图片后再试"})
+        try:
+            raw = self.rfile.read(self.stream_len) if self.stream_len else b""
+            self.stream_len = 0
+            data = json.loads(raw or b"null")
+            if not isinstance(data, dict) or not isinstance(data.get("slides"), list):
+                raise ValueError("导出数据格式不对")
+            out = deck / "export" / f"{deck.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pptx"
+            out.parent.mkdir(exist_ok=True)
+            rep = exporter.build(data, out)  # outside LOCK: can take seconds
+            res = {"file": str(out.resolve()), "url": "/export/" + quote(out.name), "summary": exporter.summary(rep), "report": rep}
+            (runtime(deck) / "export.json").write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+            return self.send(200, res)
+        except exporter.Missing as e:
+            return self.send(503, {"error": str(e)})
+        except (ValueError, KeyError, TypeError) as e:
+            return self.send(400, {"error": f"导出失败：{e}"})
+        except OSError as e:
+            return self.send(503, {"error": f"导出时写不进磁盘：{e}"})
+
     def import_post(self, url):
         deck, q = self.server.deck, parse_qs(url.query)
         try:
@@ -574,6 +600,8 @@ class Handler(BaseHTTPRequestHandler):
         data, ctype = f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream"
         if ctype == "text/html" and not re.search(rb"<meta[^>]+charset", data[:65536], re.I):
             ctype = "text/html; charset=utf-8"  # an html that never says its encoding is almost always utf-8
+        if rel[:1] == ("export",):  # an exported pptx downloads under its own (often Chinese) name
+            sandbox = {**(sandbox or {}), "Content-Disposition": "attachment; filename*=UTF-8''" + quote(f.name)}
         self.send(200, data, ctype, sandbox)
 
     def read_json(self):
@@ -585,6 +613,8 @@ class Handler(BaseHTTPRequestHandler):
         url = self.guard(need_token=True)
         if not url:
             return
+        if url.path == "/api/export":
+            return self.export_post()
         if url.path in ("/api/import", "/api/import/url"):
             return self.import_post(url)
         if url.path.startswith("/api/kb/"):

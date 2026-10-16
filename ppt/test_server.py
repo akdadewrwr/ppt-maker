@@ -466,6 +466,55 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual(str(c.exception), "导出需要 python-pptx：pip install python-pptx")
 
 
+class ExportApiTests(ServerCase):
+    def post_raw(self, path, data):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        c.request("POST", path, data, {"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json"})
+        r = c.getresponse()
+        out = (r.status, json.loads(r.read() or b"null"))
+        c.close()
+        return out
+
+    def test_export_writes_a_file_and_offers_it_as_a_download(self):
+        st, d = self.post_raw("/api/export?t=tok", json.dumps(sample_export()).encode())
+        self.assertEqual(st, 200, d)
+        f = Path(d["file"])
+        self.assertEqual(f.parent, (self.deck / "export").resolve())
+        self.assertRegex(f.name, r"^deck-\d{8}-\d{6}\.pptx$")
+        self.assertTrue(d["summary"].startswith("导出完成：2 页"))
+        self.assertEqual(json.loads((self.deck / ".ppt" / "export.json").read_text(encoding="utf-8"))["file"], d["file"])
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", d["url"], headers={"Host": f"127.0.0.1:{self.port}"})
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        self.assertEqual(r.getheader("Content-Disposition"), "attachment; filename*=UTF-8''" + quote(f.name))
+        self.assertEqual(r.read()[:2], b"PK")
+        c.close()
+
+    def test_export_needs_the_token_and_a_sane_body(self):
+        self.assertEqual(self.post_raw("/api/export?t=bad", b"{}")[0], 403)
+        self.assertEqual(self.post_raw("/api/export?t=tok", b"not json")[0], 400)
+        self.assertEqual(self.post_raw("/api/export?t=tok", json.dumps({"slides": "x"}).encode())[0], 400)
+
+    def test_export_over_50mb_is_refused(self):  # the limit is patched small; refused uploads are still read off so the 413 arrives
+        with mock.patch.object(server, "MAX_EXPORT", 16):
+            self.assertEqual(self.post_raw("/api/export?t=tok", b"x" * 1000)[0], 413)
+        self.assertEqual(server.MAX_EXPORT, 50 * 1024 * 1024)
+
+    def test_export_without_python_pptx_says_how_to_install(self):
+        with mock.patch.object(exporter, "build", side_effect=exporter.Missing("导出需要 python-pptx：pip install python-pptx")):
+            st, d = self.post_raw("/api/export?t=tok", json.dumps(sample_export()).encode())
+        self.assertEqual((st, d["error"]), (503, "导出需要 python-pptx：pip install python-pptx"))
+
+    def test_a_chinese_deck_name_downloads_with_its_name(self):
+        (self.deck / "export").mkdir()
+        (self.deck / "export" / "季度 复盘-1.pptx").write_bytes(b"PK")
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", "/export/" + quote("季度 复盘-1.pptx"), headers={"Host": f"127.0.0.1:{self.port}"})
+        self.assertEqual(c.getresponse().getheader("Content-Disposition"), "attachment; filename*=UTF-8''" + quote("季度 复盘-1.pptx"))
+        c.close()
+
+
 class DrainTests(unittest.TestCase):
     def test_drain_discards_in_chunks(self):  # review M4: an oversized body must not be buffered whole
         reads = []

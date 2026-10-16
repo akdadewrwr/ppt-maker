@@ -231,6 +231,9 @@ try {
   await open(url); await sleep(300);
   const t2 = await rectOf('#b-p2-title');
   await click(t2.x, t2.y); await sleep(300);
+  check('S format bar stays one row', await ev(`(() => { const b = document.querySelector('.ppt-bar:not([hidden])'), k = [...b.children].filter((c) => c.offsetParent);
+    return k.every((c) => Math.abs(c.getBoundingClientRect().top + c.offsetHeight / 2 - (k[0].getBoundingClientRect().top + k[0].offsetHeight / 2)) < 6) && k.every((c) => c.tagName !== 'BUTTON' || c.getBoundingClientRect().height < 40); })()`),
+    await ev(`(() => { const r = document.querySelector('.ppt-bar').getBoundingClientRect(); return Math.round(r.width) + 'x' + Math.round(r.height); })()`));
   check('S click selects (frame + bar, no popup)', await ev(`!!document.querySelector('.ppt-frame:not([hidden])') && !!document.querySelector('.ppt-bar:not([hidden])') && !document.querySelector('.ppt-pop')`));
   check('S top bar shows status', !!(await ev(`document.querySelector('.ppt-top .ppt-status')?.textContent`)));
   const k = await kZoom();
@@ -376,6 +379,8 @@ try {
   check('I old deck has no object rules', !/\.obj\s*\{/.test(deckHtml()));
   const ki = await kZoom();
   let b6 = await byTitle('插入形状'); await click(b6.x, b6.y); await sleep(200);
+  check('I shape menu labels read across, one line each', await ev(`[...document.querySelectorAll('.ppt-menu .ppt-btn')].every((b) => b.offsetParent && b.getBoundingClientRect().width > b.getBoundingClientRect().height * 1.5)`),
+    await ev(`JSON.stringify([...document.querySelectorAll('.ppt-menu .ppt-btn')].map((b) => [b.textContent, Math.round(b.getBoundingClientRect().width), Math.round(b.getBoundingClientRect().height)]))`));
   b6 = await byTitle('画椭圆'); await click(b6.x, b6.y); await sleep(200);
   let sl = await rectOf('#s-cover');
   await drag(sl.l + 100 * ki, sl.t + 100 * ki, sl.l + 300 * ki, sl.t + 200 * ki); await sleep(2000);

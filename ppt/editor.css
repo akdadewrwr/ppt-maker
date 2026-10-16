@@ -43,7 +43,7 @@ body { padding-top: 48px; }
 .ppt-end { border-radius: 50%; cursor: move; }
 .ppt-armed .slide { cursor: copy; }
 .ppt-menu, .ppt-icons { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); padding: 6px; box-sizing: border-box; }
-.ppt-menu { display: flex; flex-direction: column; align-items: stretch; }
+.ppt-menu { display: flex; flex-direction: column; align-items: stretch; width: max-content; } /* #ppt-ui is 0 wide: an unsized popup would shrink to one character per line */
 .ppt-menu .ppt-btn { text-align: left; }
 .ppt-icons { width: 340px; }
 .ppt-icons input { font: inherit; border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 6px; box-sizing: border-box; }

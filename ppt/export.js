@@ -74,8 +74,18 @@ window.PPTExport = (() => {
     const rel = (r) => ({ x: (r.left - sr.left) / k, y: (r.top - sr.top) / k, w: r.width / k, h: r.height / k });
     const items = [], rasters = [], pending = [];
     const scs = getComputedStyle(slide), sbg = col(scs.backgroundColor);
-    // whole: a list's text sits in its <li>s, so the list's own box is the text box
-    const textItem = (el, paras, whole = false) => { const r = whole ? el.getBoundingClientRect() : textRect(el); if (r && paras.some((p) => p.runs.length)) { const g = rel(r); items.push({ k: 'text', ...g, w: g.w + 4, paras }); } };
+    // The text box spans el's content width (PowerPoint's wider font metrics then wrap where the page does, and centring
+    // stays centred); one line of text never wraps. whole: a list's text sits in its <li>s, so the list's box is the height.
+    const textItem = (el, paras, whole = false) => {
+      const r = whole ? el.getBoundingClientRect() : textRect(el);
+      if (!r || !paras.some((p) => p.runs.length)) return;
+      const cs = getComputedStyle(el), b = el.getBoundingClientRect(), n = (v) => parseFloat(v) || 0;
+      let left = b.left + n(cs.borderLeftWidth) + n(cs.paddingLeft);
+      const right = b.right - n(cs.borderRightWidth) - n(cs.paddingRight);
+      if (whole) left -= 24 * (sr.width / W); // the pptx bullet indent (marL 24px): list text then starts where the page's does
+      const lh = parseFloat(cs.lineHeight) || n(cs.fontSize) * 1.3;
+      items.push({ k: 'text', ...rel({ left, top: r.top, width: Math.max(right - left, r.width), height: r.height }), wrap: paras.length > 1 || r.height > lh * 1.5, paras });
+    };
     const raster = (el, why, pad = 0) => { const g = rel(el.getBoundingClientRect()); const it = { k: 'raster', x: g.x - pad, y: g.y - pad, w: g.w + 2 * pad, h: g.h + 2 * pad, id: idOf(el), why }; items.push(it); rasters.push([el, it]); };
     function obj(el) {
       const cs = getComputedStyle(el), kind = el.dataset.kind, shape = el.dataset.shape;

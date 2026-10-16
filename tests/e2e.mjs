@@ -745,6 +745,13 @@ try {
   check('X the measure has native text, box, table, shape, line and a raster for the svg',
     ['text', 'box', 'table', 'shape', 'line', 'raster'].every((k) => kinds.includes(k)) && ms.slides[0].items.find((i) => i.k === 'raster').id === 'b-ex-svg'
     && ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].bullet === '•'), kinds.join() + ' ' + JSON.stringify(ms.skipped));
+  const xbox = ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0]?.t === '框里的字');
+  check('X a one-line text does not wrap, and its box spans the block content width', xt1.wrap === false && xbox && Math.abs(xbox.w - (6 * 80 - 16)) < 2,
+    JSON.stringify([xt1.wrap, xbox?.x, xbox?.w]));
+  const xlist = ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].bullet === '•');
+  const ulLeft = await ev(`(() => { const u = document.querySelector('#b-ex-box ul'), s = document.getElementById('s-export'), k = s.getBoundingClientRect().width / 1280;
+    return (u.getBoundingClientRect().left - s.getBoundingClientRect().left) / k + parseFloat(getComputedStyle(u).paddingLeft); })()`);
+  check('X list text lands where the page puts it (the bullet indent is taken out of the box)', xlist && Math.abs(xlist.x + 24 - ulLeft) < 2, JSON.stringify([xlist?.x, ulLeft]));
   check('X an image that cannot be fetched is skipped, not fatal', ms.skipped.some((s) => s.id === 'b-ex-ext'), JSON.stringify(ms.skipped));
   b9 = await byTitle('导出成可在 PowerPoint'); await click(b9.x, b9.y); await sleep(500);
   check('X the button shows it is busy', (await ev(`[...document.querySelectorAll('#ppt-ui [title^="导出成可在"]')].map((b) => b.textContent).join()`)) === '导出中…');

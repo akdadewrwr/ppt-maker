@@ -108,8 +108,8 @@ def build(data, out):
             if r.get("s"):
                 run._r.get_or_add_rPr().set("strike", "sngStrike")
 
-    def text_into(tf, paras, middle=False):
-        tf.word_wrap = True
+    def text_into(tf, paras, middle=False, wrap=True):
+        tf.word_wrap = wrap
         tf.auto_size = MSO_AUTO_SIZE.NONE
         tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
         if middle:
@@ -119,7 +119,7 @@ def build(data, out):
 
     def add_text(s, it):
         tb = s.shapes.add_textbox(E(it["x"]), E(it["y"]), E(it["w"]), E(it["h"]))
-        text_into(tb.text_frame, it["paras"])
+        text_into(tb.text_frame, it["paras"], wrap=it.get("wrap", True) is not False)
         return "text"
 
     def add_box(s, it):

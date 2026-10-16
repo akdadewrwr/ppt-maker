@@ -447,6 +447,15 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual(len(pics), 2)
         self.assertAlmostEqual(pics[0].crop_left, 0.1, places=3)
 
+    def test_one_line_text_never_wraps(self):  # acceptance: PowerPoint's wider metrics wrapped a one-line subtitle
+        from pptx import Presentation
+        para = {"align": "l", "lh": None, "bullet": "", "level": 0, "runs": [{"t": "产品组 · 2026 年 10 月 · 内部", "size": 28}]}
+        data = {"slides": [{"id": "s", "bg": None, "items": [{"k": "text", "x": 0, "y": 0, "w": 300, "h": 40, "wrap": False, "paras": [para]},
+                                                            {"k": "text", "x": 0, "y": 100, "w": 300, "h": 80, "paras": [para]}]}]}
+        exporter.build(data, self.tmp / "w.pptx")
+        a, b = Presentation(str(self.tmp / "w.pptx")).slides[0].shapes
+        self.assertEqual((a.text_frame.word_wrap, b.text_frame.word_wrap), (False, True))
+
     def test_summary_names_what_became_pictures(self):
         rep = {"slides": 4, "text": 18, "shape": 6, "table": 1, "image": 2, "raster": [{"id": "b-chart", "why": "SVG 插图"}], "skipped": []}
         self.assertEqual(exporter.summary(rep), "导出完成：4 页，18 个文本框、6 个形状、1 个表格、2 张图片；1 处转成了图片（b-chart：SVG 插图）")

@@ -662,11 +662,20 @@ try {
   await ev(`window.__m = 1`);
   fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace('<title>', '<title>R')); await sleep(3000);
   check('QR the page still reloads while the list panel is open', (await ev(`window.__m`)) === undefined && (await batchLen()) === 1);
+  b9 = await byTitle('打开待发清单'); await click(b9.x, b9.y); await sleep(500);
+  await ev(`(() => { window.__w = 0; const set = Storage.prototype.setItem; window.__realSet0 = set; Storage.prototype.setItem = function (k, v) { if (k.startsWith('ppt-batch')) window.__w++; return set.call(this, k, v); }; document.querySelector('.ppt-kb-item textarea').focus(); })()`);
+  for (const ch of '逐字输入不卡顿') { await send('Input.insertText', { text: ch }); await sleep(30); }
+  const typedWrites = await ev(`window.__w`); await sleep(1000);
+  check('QR typing in the list does not rewrite it on every key', typedWrites <= 1 && (await ev(`window.__w`)) <= 2
+    && (await ev(`JSON.parse(localStorage.getItem('ppt-batch:' + PPT.token)).items[0].text`)).endsWith('逐字输入不卡顿'), `writes while typing ${typedWrites}`);
+  await ev(`Storage.prototype.setItem = window.__realSet0`);
+  await send('Input.insertText', { text: '刷新前' }); await open(url); await sleep(800);
+  check('QR an edit typed just before leaving is kept', (await ev(`JSON.parse(localStorage.getItem('ppt-batch:' + PPT.token)).items[0].text`)).endsWith('刷新前'));
   await ev(`(() => { const set = Storage.prototype.setItem; window.__realSet = set; Storage.prototype.setItem = function (k, v) { if (k.startsWith('ppt-queue') && v.includes('data:image')) throw new DOMException('full', 'QuotaExceededError'); return set.call(this, k, v); }; })()`);
   b9 = await byTitle('打开待发清单'); await click(b9.x, b9.y); await sleep(500);
   b9 = await byTitle('把清单作为一个整体发给 Claude'); await click(b9.x, b9.y); await sleep(2500);
   const bq = inbox().filter((e) => e.type === 'intent').at(-1);
-  check('QR a batch too big for the send queue goes without screenshots, and says so', bq?.kind === 'batch' && bq.items[0].text === '大清单' && !bq.items[0].shot
+  check('QR a batch too big for the send queue goes without screenshots, and says so', bq?.kind === 'batch' && bq.items[0].text.startsWith('大清单') && !bq.items[0].shot
     && ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('截图没能保存'), JSON.stringify(bq?.items));
   await ev(`Storage.prototype.setItem = function (k, v) { if (k.startsWith('ppt-queue')) throw new DOMException('full', 'QuotaExceededError'); return window.__realSet.call(this, k, v); }`);
   await drag(...(await SP('s-cover', 900, 100)), ...(await SP('s-cover', 1200, 200))); await sleep(300); await type('发不出去'); await ctrlEnter(); await sleep(800);
@@ -703,6 +712,11 @@ try {
     return [[r.left + 10, r.top + r.height / 2], [r.right - 10, r.top + r.height / 2]].every(([x, y]) => document.elementFromPoint(x, y) === i); })()`));
   await open(url); await sleep(2000);
   check('I2 the reply pops up only once', !((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导入了 2 页'));
+  await ev(`(() => { localStorage.removeItem('ppt-import-seen:' + PPT.token); localStorage.removeItem('ppt-import-seen'); document.querySelectorAll('.ppt-toast').forEach((t) => t.remove());
+    const set = Storage.prototype.setItem; window.__realSet1 = set; Storage.prototype.setItem = function (k, v) { if (k.startsWith('ppt-import-seen')) throw new DOMException('full', 'QuotaExceededError'); return set.call(this, k, v); }; })()`);
+  await sleep(3500);
+  check('I2 with storage full the reply still pops up only once', (await ev(`[...document.querySelectorAll('.ppt-toast')].filter((t) => t.textContent.includes('导入了 2 页')).length`)) === 1);
+  await ev(`Storage.prototype.setItem = window.__realSet1`);
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

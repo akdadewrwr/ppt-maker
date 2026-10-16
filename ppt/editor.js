@@ -407,16 +407,26 @@
   });
 
   // ---- the 待发清单: intents wait here until "全部发送" sends them as one ----
+  var typedBatch, typedTimer; // var: batch() runs during start-up, before this line. Edits typed in the list panel, written once the user pauses
   function batch() { // hoisted: the panel and the top bar read it during start-up
+    if (typedBatch) return typedBatch;
     const b = ls.get('ppt-batch', null);
     return b && Array.isArray(b.items) ? b : { note: '', items: [] };
   }
   function setBatch(b, refreshPanel = true) {
-    if (!ls.set('ppt-batch', b)) toast('浏览器存储已满，清单没能保存');
-    lastKey = ''; render(); tb.setBatchCount(b.items.length);
-    if (refreshPanel) batchPanel.refresh();
+    clearTimeout(typedTimer);
+    if (!refreshPanel) { typedBatch = b; typedTimer = setTimeout(storeBatch, 400); return; } // typing: no rewrite per key
+    typedBatch = b; storeBatch();
+    batchPanel.refresh();
     if (!b.items.length) batchPanel.toggle(false);
   }
+  function storeBatch() {
+    const b = typedBatch; typedBatch = null; clearTimeout(typedTimer);
+    if (!b) return;
+    if (!ls.set('ppt-batch', b)) toast('浏览器存储已满，清单没能保存');
+    lastKey = ''; render(); tb.setBatchCount(b.items.length);
+  }
+  addEventListener('pagehide', storeBatch); // an edit typed just before leaving is kept
   function addToBatch(p) {
     const b = batch();
     if (b.items.length >= 30) return toast('清单最多 30 条，请先发送一批');
@@ -434,6 +444,7 @@
     if (!b.items.length) return;
     const ev = { type: 'intent', kind: 'batch', text: (b.note || '').trim() || '按清单修改', items: b.items };
     if (JSON.stringify(ev).length > 9e6) return toast('清单太大（截图太多），请分两批发送');
+    typedBatch = null; clearTimeout(typedTimer);
     ls.set('ppt-batch', { note: '', items: [] }); // free its room first: the send queue needs about as much again
     const stored = enqueue(ev);
     if (!stored) { setBatch(b); return toast('清单没能发送（浏览器存储已满），已留在清单里；删掉几条带大截图的再试'); }
@@ -519,12 +530,13 @@
   function importUrl(u, mode) {
     return postImport(api('/api/import/url'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: u, mode }) });
   }
+  const shownImports = new Set(); // also in memory: with storage full the reply must still pop up only once
   function announceImports() {
-    const seen = new Set(ls.get('ppt-import-seen', []));
+    const seen = new Set([...ls.get('ppt-import-seen', []), ...shownImports]);
     let changed = false;
     for (const e of state?.events || []) {
       if (e.type !== 'import' || e.status !== 'done' || !e.reply || seen.has(e.id)) continue;
-      seen.add(e.id); changed = true;
+      seen.add(e.id); shownImports.add(e.id); changed = true;
       toast(`导入完成：${e.reply}`, null, e.original);
     }
     if (changed) ls.set('ppt-import-seen', [...seen]);

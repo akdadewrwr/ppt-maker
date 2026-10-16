@@ -32,7 +32,7 @@ argument-hint: <deck 名字或主题>
   - `ppt-maker`：直接复制各页，id 冲突换新 id；`mode:replace` 时连 `#theme` 一起沿用。
   - `slides`：原来一页对一页，内容、布局、配色、字体尽量保持；布局对齐到 16×9 网格；颜色、字体写进 `#theme`；原有图表与 SVG 保留。
   - `page`（网址也按这类）：按标题拆页（封面 + 每个章节一页），沿用原配色。
-  - `pptx`：`source` 是 `slides.json`（坐标已换算成画布像素，宽 1280；`size.ratio` 不是 16:9 时按比例放进 16:9，空出的地方留白），`media` 是原图，有 `pdf` 时用 Read 按页对照原样。一页对一页：标题、正文这类文本框对齐 16×9 网格做成块；装饰形状、线条、箭头、图片按精确像素做成浮动对象（规则 10）；`theme` 的配色和字体写进 `#theme`；用到的 `media/` 图片复制到 `assets/`。`unsupported`（图表、SmartArt 等）能用表格或 SVG 表达就重建，否则从 PDF 截出那块当图片放进去。备注、动画、切换效果不保留。
+  - `pptx`：`source` 是 `slides.json`（坐标已换算成画布像素，宽 1280；`size.ratio` 不是 16:9 时按比例放进 16:9，空出的地方留白），`media` 是原图（同一张图只存一份），有 `pdf` 时用 Read 按页对照原样。元素带 `rotation`（组合的旋转已算进去）和可能的 `flip`；形状带 `fill`、`line`、`lw`（边线颜色和粗细）。一页对一页：标题、正文这类文本框对齐 16×9 网格做成块；装饰形状、线条、箭头、图片按精确像素做成浮动对象（规则 10）；`theme` 的配色和字体写进 `#theme`；用到的 `media/` 图片复制到 `assets/`。`unsupported`（图表、SmartArt 等）能用表格或 SVG 表达就重建，否则从 PDF 截出那块当图片放进去。备注、动画、切换效果不保留。
   - 图片：`dir` 里的复制到本 deck 的 `assets/`；网上的下载到 `assets/`（失败就放占位框）。SVG 图不放进 `assets/`，去掉脚本后内联到块里。去掉脚本、动画、`on*` 属性、`javascript:` / `data:` 链接、`<base>`、`<iframe>` / `<object>` / `<embed>`、`<form>`、`<meta http-equiv>`、外部字体和脚本链接。
   - `mode:replace`：保留 `#base`，换掉全部页面；`mode:append`：加在最后一页之后。每页、每块都按格式规则写 id 和 grid-area。
   - 回执：导入了几页、哪些没能还原。识别不出内容或网址打不开：不改 deck，回执说明。

@@ -1,4 +1,5 @@
 ## 上一轮完成
+- 审查延后的次要问题全部修完（分支 feat/pptx-minors，80d98fd 及 ppt.md 补充），server OK、selftest 99/99、e2e 194/194；等用户同意合并。
 - 子项目 6（导出 / 导入 PPTX）已合并到 main 并推送，分支 feat/pptx 已删除。
 - main 上测试：server OK、selftest 99/99、e2e 189/189；e2e 不再往 ~/Downloads 写文件。
 - 已删除 ~/Downloads 里 13 个 e2e-smoke-*.pptx。
@@ -17,5 +18,4 @@
 - 无
 
 ## 下一步
-- 延后的次要问题：WebP 图片、测量出错不回退为图片、隐藏文字也被导出、半成品形状、同一秒导出撞名、SmartArt 类型名、组合旋转、导入无解压大小上限、导出中页面刷新导致导出丢失。
-- 等用户决定下一步。
+- 合并 feat/pptx-minors（git push . feat/pptx-minors:main，在 main 上跑全部测试）。

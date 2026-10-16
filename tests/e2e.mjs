@@ -764,6 +764,17 @@ print(json.dumps({"n": len(p.slides), "texts": [sh.text_frame.text for s in p.sl
     check('X read back: one slide per page, title text editable, svg as a picture, a table',
       back.n === (await ev(`document.querySelectorAll('section.slide').length`)) && back.texts.includes('导出测试标题') && back.pics >= 1 && back.tables === 1, JSON.stringify(back).slice(0, 300));
   }
+  const pptxPath = path.join(SCRATCH, '旧稿.pptx');
+  execFileSync('python', ['-c', `import sys
+from pptx import Presentation
+p = Presentation(); s = p.slides.add_slide(p.slide_layouts[1]); s.shapes.title.text = "旧 PPT 标题"; p.save(sys.argv[1])`, pptxPath]);
+  b9 = await byTitle('导入以前做过的 HTML'); await click(b9.x, b9.y); await sleep(400);
+  check('I3 the dialog accepts pptx', (await ev(`document.querySelector('.ppt-import input[type=file]').accept`)).includes('.pptx'));
+  { const d = await send('DOM.getDocument'); const q = await send('DOM.querySelector', { nodeId: d.result.root.nodeId, selector: '.ppt-import input[type=file]' });
+    await send('DOM.setFileInputFiles', { files: [pptxPath], nodeId: q.result.nodeId }); }
+  let pe = null;
+  for (let i = 0; i < 120 && !pe; i++) { await sleep(500); pe = inbox().find((e) => e.type === 'import' && e.hint === 'pptx'); }
+  check('I3 a pptx becomes an import event for Claude', !!pe && fs.existsSync(pe.source) && fs.existsSync(pe.media), JSON.stringify(pe)?.slice(0, 200));
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

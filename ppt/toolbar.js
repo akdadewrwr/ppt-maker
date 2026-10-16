@@ -53,7 +53,7 @@
     btn(top, '✎ 草图', '在当前页上画草图', () => cb.sketch());
     btn(top, '+草图页', '插入空白页并画草图', () => cb.addSketchSlide());
     btn(top, '📚 知识库', '打开知识库', () => cb.kb());
-    const importBtn = btn(top, '导入', '导入以前做过的 HTML', () => openImport(importBtn));
+    const importBtn = btn(top, '导入', '导入以前做过的 HTML 或 PPTX', () => openImport(importBtn));
     const exportBtn = btn(top, '导出 PPT', '导出成可在 PowerPoint 里编辑的 .pptx', () => cb.exportPptx());
     const batchBtn = btn(top, '📝 清单', '打开待发清单', () => cb.batch()); batchBtn.hidden = true;
     sep(top);
@@ -122,14 +122,14 @@
     imp.addEventListener('keydown', (k) => { if (k.key === 'Escape') imp.hidden = true; });
     function openImport(anchor) {
       imp.textContent = ''; imp.hidden = false;
-      el('b', null, imp, '导入以前做过的 HTML');
+      el('b', null, imp, '导入以前做过的 HTML 或 PPTX');
       const row = el('div', 'ppt-row', imp);
       const mode = el('select', null, row); mode.title = '放到哪';
       [['append', '追加到末尾'], ['replace', '替换当前 deck']].forEach(([v, l]) => { el('option', null, mode, l).value = v; });
       mode.value = cb.importMode();
-      const file = el('input', null, row); file.type = 'file'; file.accept = '.html,.htm,.zip'; file.hidden = true;
+      const file = el('input', null, row); file.type = 'file'; file.accept = '.html,.htm,.zip,.pptx'; file.hidden = true;
       file.addEventListener('change', () => { if (file.files[0]) { imp.hidden = true; cb.importFile(file.files[0], mode.value); } file.value = ''; });
-      btn(row, '选择文件', '选择 .html / .htm，或把 HTML 和图片打包成 .zip', () => file.click());
+      btn(row, '选择文件', '选择 .html / .htm / .pptx，或把 HTML 和图片打包成 .zip', () => file.click());
       const r2 = el('div', 'ppt-row', imp);
       const url = el('input', null, r2); url.placeholder = '或粘贴网页网址 https://…';
       const go = () => { if (url.value.trim()) { imp.hidden = true; cb.importUrl(url.value.trim(), mode.value); } };

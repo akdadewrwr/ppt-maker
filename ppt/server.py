@@ -500,6 +500,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 ev = add_event(deck, fields)
             return self.send(200, {"id": ev["id"]})
+        except exporter.Missing as e:
+            return self.send(503, {"error": str(e)})
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except OSError as e:
@@ -597,7 +599,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "not found"})
         rel = f.relative_to(deck.resolve()).parts if root == deck else ()
         # nothing served from the deck folder (imports, assets, anything Claude copied) ever runs as the editor
-        sandbox = {"Content-Security-Policy": "sandbox"} if root == deck else None
+        # (a PDF is the exception: Chrome's PDF viewer won't open under sandbox, and it runs in its own process anyway)
+        sandbox = {"Content-Security-Policy": "sandbox"} if root == deck and f.suffix.lower() != ".pdf" else None
         data, ctype = f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream"
         if ctype == "text/html" and not re.search(rb"<meta[^>]+charset", data[:65536], re.I):
             ctype = "text/html; charset=utf-8"  # an html that never says its encoding is almost always utf-8

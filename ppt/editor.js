@@ -539,7 +539,7 @@
     finally { exporting = false; tb.setExporting(false); }
   }
   function importFile(f, mode) {
-    if (!/\.(html?|zip)$/i.test(f.name)) return toast('只能导入 .html、.htm 或 .zip');
+    if (!/\.(html?|zip|pptx)$/i.test(f.name)) return toast(/\.ppt$/i.test(f.name) ? '请先在 PowerPoint 里另存为 .pptx' : '只能导入 .html、.htm、.zip 或 .pptx');
     if (f.size > 50 * 1024 * 1024) return toast('文件超过 50MB');
     return postImport(api('/api/import') + `&mode=${mode}&name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f });
   }

@@ -535,6 +535,100 @@ class ExportCliTests(unittest.TestCase):
         self.assertIn("导出完成：1 页", r.stdout)
 
 
+def make_pptx(path, width_in=13.333, height_in=7.5):
+    from pptx import Presentation
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Inches, Pt
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(width_in), Inches(height_in)
+    s = prs.slides.add_slide(prs.slide_layouts[1])  # title + content placeholders: positions come from the layout
+    s.shapes.title.text = "季度复盘"
+    tb = s.shapes.add_textbox(Inches(1), Inches(5), Inches(4), Inches(1))
+    r = tb.text_frame.paragraphs[0].add_run()
+    r.text, r.font.size, r.font.bold = "大字", Pt(30), True
+    r.font.color.rgb = RGBColor(0x11, 0x22, 0x33)
+    sh = s.shapes.add_shape(MSO_SHAPE.OVAL, Inches(6), Inches(1), Inches(2), Inches(1))
+    sh.fill.solid(); sh.fill.fore_color.rgb = RGBColor(0x38, 0xBD, 0xF8)
+    grp = s.shapes.add_group_shape()
+    grp.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(9), Inches(4), Inches(1), Inches(1))
+    s.shapes.add_picture(io.BytesIO(base64.b64decode(PNG_1PX)), Inches(10), Inches(1), Inches(1), Inches(1))
+    t = s.shapes.add_table(2, 2, Inches(1), Inches(6), Inches(4), Inches(1)).table
+    t.cell(0, 0).text = "指标"
+    prs.slides.add_slide(prs.slide_layouts[6])
+    prs.save(str(path))
+
+
+class PptxImportTests(ServerCase):
+    def up(self, data, name, mode="append"):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=120)
+        c.request("POST", f"/api/import?t=tok&mode={mode}&name={quote(name)}", data, {"Host": f"127.0.0.1:{self.port}"})
+        r = c.getresponse()
+        out = (r.status, json.loads(r.read() or b"null"))
+        c.close()
+        return out
+
+    def test_pptx_is_taken_apart_for_claude(self):
+        src = self.tmp / "old.pptx"
+        make_pptx(src)
+        with mock.patch.object(importer, "render_pdf", return_value=None):
+            st, d = self.up(src.read_bytes(), "旧稿.pptx")
+        self.assertEqual(st, 200, d)
+        e = inbox(self.deck)[-1]
+        self.assertEqual((e["type"], e["hint"], e["pdf"]), ("import", "pptx", None))
+        sj = json.loads(Path(e["source"]).read_text(encoding="utf-8"))
+        self.assertEqual((sj["size"]["w"], round(sj["size"]["h"]), sj["size"]["ratio"]), (1280, 720, "16:9"))
+        self.assertEqual(len(sj["slides"]), 2)
+        items = sj["slides"][0]["items"]
+        title = [i for i in items if i["kind"] == "text" and i["paras"] and i["paras"][0]["runs"] and i["paras"][0]["runs"][0]["t"] == "季度复盘"][0]
+        self.assertGreater(title["w"], 0)  # inherited from the layout placeholder
+        big = [i for i in items if i["kind"] == "text" and "大字" in json.dumps(i, ensure_ascii=False)][0]
+        self.assertEqual((round(big["x"]), round(big["y"])), (96, 480))
+        run = big["paras"][0]["runs"][0]
+        self.assertEqual((round(run["size"]), run["b"], run["color"]), (40, True, "112233"))
+        oval = [i for i in items if i["kind"] == "shape" and i.get("shape") == "OVAL"][0]
+        self.assertEqual(oval["fill"], "38BDF8")
+        grp_rect = [i for i in items if i["kind"] == "shape" and i.get("shape") == "RECTANGLE"][0]
+        self.assertEqual((round(grp_rect["x"]), round(grp_rect["y"])), (864, 384))  # group child in page coordinates
+        pic = [i for i in items if i["kind"] == "picture"][0]
+        self.assertTrue((Path(e["dir"]) / pic["file"]).is_file())
+        tbl = [i for i in items if i["kind"] == "table"][0]
+        self.assertEqual(tbl["cells"][0][0], "指标")
+        self.assertIn("colors", sj["theme"])
+
+    def test_a_4_3_deck_keeps_its_ratio(self):
+        src = self.tmp / "old43.pptx"
+        make_pptx(src, 10, 7.5)
+        with mock.patch.object(importer, "render_pdf", return_value=None):
+            self.assertEqual(self.up(src.read_bytes(), "a.pptx")[0], 200)
+        sj = json.loads(Path(inbox(self.deck)[-1]["source"]).read_text(encoding="utf-8"))
+        self.assertEqual((sj["size"]["w"], sj["size"]["h"], sj["size"]["ratio"]), (1280, 960, "4:3"))
+
+    def test_broken_pptx_and_old_ppt_are_refused_cleanly(self):
+        self.assertEqual(self.up(b"PK\x03\x04 not really", "bad.pptx"), (400, {"error": "无法读取这个 pptx"}))
+        self.assertEqual(self.up(b"\xd0\xcf\x11\xe0", "old.ppt")[1]["error"], "请先在 PowerPoint 里另存为 .pptx")
+        self.assertEqual([p for p in (self.deck / "imports").iterdir()] if (self.deck / "imports").exists() else [], [])
+
+    def test_no_python_pptx_gives_503(self):
+        src = self.tmp / "old.pptx"
+        make_pptx(src)
+        with mock.patch.object(importer, "pptx_extract", side_effect=exporter.Missing("导出需要 python-pptx：pip install python-pptx")):
+            self.assertEqual(self.up(src.read_bytes(), "x.pptx")[0], 503)
+        self.assertEqual(list((self.deck / "imports").iterdir()), [])
+
+    def test_render_pdf_without_libreoffice_is_none(self):
+        with mock.patch.object(importer, "soffice", return_value=None):
+            self.assertIsNone(importer.render_pdf(self.tmp / "x.pptx", self.tmp))
+
+    def test_pdf_original_is_not_sandboxed(self):  # Chrome's PDF viewer won't open under CSP sandbox
+        (self.deck / "imports" / "i-x").mkdir(parents=True)
+        (self.deck / "imports" / "i-x" / "slides.pdf").write_bytes(b"%PDF-1.4")
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", "/imports/i-x/slides.pdf", headers={"Host": f"127.0.0.1:{self.port}"})
+        self.assertIsNone(c.getresponse().getheader("Content-Security-Policy"))
+        c.close()
+
+
 class DrainTests(unittest.TestCase):
     def test_drain_discards_in_chunks(self):  # review M4: an oversized body must not be buffered whole
         reads = []

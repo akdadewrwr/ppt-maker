@@ -283,7 +283,7 @@
       state = await r.json(); offline = false; online = state.online;
       announceImports();
       const typing = drag || pop || sketch || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t === document.activeElement || (t.value.trim() && !t.closest('.ppt-batch')))) // list items always hold text: only typing in them counts;
-      if (!editing && !saving && !typing && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing
+      if (!editing && !saving && !typing && !exporting && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing, nor an export
       flush();
     } catch { offline = true; }
     render();
@@ -527,7 +527,7 @@
       toast('已提交导入，等 Claude 转换');
     } catch (e) { toast(`没有导入：${e.message}`); }
   }
-  let exporting = false;
+  var exporting = false; // var: poll() reads it
   async function exportPptx(auto = false) { // measured here, built by the server; the file downloads and a report pops up
     if (exporting) return;
     exporting = true; tb.setExporting(true); select(null); closePop();

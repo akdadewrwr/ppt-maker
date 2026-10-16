@@ -1,6 +1,6 @@
 """ppt-maker HTML import (stdlib only): store an uploaded .html / .zip safely under decks/<name>/imports/<id>/,
 pick its entry page and guess what it is. Claude does the conversion; this only lands the files."""
-import json, os, re, secrets, shutil, subprocess, tempfile, zipfile, zlib
+import hashlib, json, math, os, re, secrets, shutil, subprocess, tempfile, time, zipfile, zlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlparse
 
@@ -113,6 +113,31 @@ def save(deck, stream, length, name):
 
 
 EMU_PER_IN = 914400
+MAX_UNPACKED = 200 * 1024 * 1024  # python-pptx loads every part into memory
+
+
+def kill_tree(p):
+    """End a process and everything it started (LibreOffice's soffice.bin, Edge's helpers)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=30)
+        else:
+            os.killpg(os.getpgid(p.pid), 9)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        p.kill()
+        p.wait(10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def rmtree_retry(d):
+    for _ in range(10):  # a just-killed process can hold files for a moment
+        shutil.rmtree(d, ignore_errors=True)
+        if not Path(d).exists():
+            return
+        time.sleep(0.3)
 
 
 def soffice():
@@ -129,8 +154,14 @@ def render_pdf(path, out_dir):
         return None
     prof = Path(tempfile.mkdtemp(prefix="ppt-lo-"))  # own profile: a LibreOffice the user has open locks the default one
     try:
-        subprocess.run([exe, f"-env:UserInstallation={prof.as_uri()}", "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(path)],
-                       capture_output=True, timeout=60)
+        p = subprocess.Popen([exe, f"-env:UserInstallation={prof.as_uri()}", "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(path)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != "nt")
+        try:
+            p.wait(60)
+        except subprocess.TimeoutExpired:
+            kill_tree(p)  # soffice.exe starts soffice.bin, which would live on and write the pdf later
+            (Path(out_dir) / (Path(path).stem + ".pdf")).unlink(missing_ok=True)
+            return None
         made = Path(out_dir) / (Path(path).stem + ".pdf")
         if not made.is_file():
             return None
@@ -140,7 +171,7 @@ def render_pdf(path, out_dir):
     except (OSError, subprocess.SubprocessError):
         return None
     finally:
-        shutil.rmtree(prof, ignore_errors=True)
+        rmtree_retry(prof)
 
 
 def pptx_extract(path, out_dir):
@@ -149,6 +180,13 @@ def pptx_extract(path, out_dir):
     from pptx import Presentation
     from pptx.enum.shapes import MSO_SHAPE_TYPE
     from pptx.oxml.ns import qn
+    try:
+        with zipfile.ZipFile(path) as z:
+            unpacked = sum(i.file_size for i in z.infolist())
+    except (zipfile.BadZipFile, OSError) as e:
+        raise ValueError("无法读取这个 pptx") from e
+    if unpacked > MAX_UNPACKED:
+        raise ValueError("pptx 解压后超过 200MB")
     try:
         prs = Presentation(str(path))
         slides = list(prs.slides)
@@ -161,7 +199,7 @@ def pptx_extract(path, out_dir):
     ratio = "16:9" if abs(w_in / h_in - 16 / 9) < 0.02 else "4:3" if abs(w_in / h_in - 4 / 3) < 0.02 else f"{w_in:.2f}x{h_in:.2f}in"
     media = Path(out_dir) / "media"
     media.mkdir(parents=True, exist_ok=True)
-    n_pic = [0]
+    n_pic, by_hash = [0], {}
 
     def color(fmt):
         try:
@@ -183,37 +221,64 @@ def pptx_extract(path, out_dir):
                                  for r in p.runs]})
         return out
 
-    def walk(shapes, ax, ay, bx, by, items):  # (ax, ay, bx, by): child EMU -> page EMU for nested groups
+    def walk(shapes, ax, ay, bx, by, items, turns=()):  # (ax, ay, bx, by): child EMU -> page EMU; turns: groups' (cx, cy, deg, flipH, flipV)
         for sh in shapes:
             try:
-                one(sh, ax, ay, bx, by, items)
+                one(sh, ax, ay, bx, by, items, turns)
             except Exception:  # noqa: BLE001 — real-world files hold shapes python-pptx can't read; note them and go on
                 items.append({"name": getattr(sh, "name", ""), "kind": "unsupported", "type": type(sh).__name__})
 
-    def one(sh, ax, ay, bx, by, items):
+    def turned(g, turns):  # apply the groups' rotations and flips to a child's centre, innermost group first
+        cx, cy, rot, flips = g["x"] + g["w"] / 2, g["y"] + g["h"] / 2, g["rotation"], [False, False]
+        for gx, gy, deg, fh, fv in reversed(turns):
+            if fh:
+                cx, rot, flips[0] = 2 * gx - cx, -rot, not flips[0]
+            if fv:
+                cy, rot, flips[1] = 2 * gy - cy, -rot, not flips[1]
+            a = math.radians(deg)
+            cx, cy = gx + (cx - gx) * math.cos(a) - (cy - gy) * math.sin(a), gy + (cx - gx) * math.sin(a) + (cy - gy) * math.cos(a)
+            rot += deg
+        g.update(x=round(cx - g["w"] / 2, 1), y=round(cy - g["h"] / 2, 1), rotation=round(rot % 360, 1))
+        if any(flips):
+            g["flip"] = "h" * flips[0] + "v" * flips[1]
+        return g
+
+    def one(sh, ax, ay, bx, by, items, turns):
             x0, y0 = sh.left or 0, sh.top or 0
             g = {"name": sh.name, "x": round((ax + bx * x0) * k, 1), "y": round((ay + by * y0) * k, 1),
                  "w": round(bx * (sh.width or 0) * k, 1), "h": round(by * (sh.height or 0) * k, 1), "rotation": round(getattr(sh, "rotation", 0) or 0, 1)}
             st = sh.shape_type
+            g0 = dict(g)
+            if turns:
+                g = turned(g, turns)
             if st == MSO_SHAPE_TYPE.GROUP:
+                gxf = sh._element.grpSpPr.find(qn("a:xfrm"))
+                me = (g["x"] + g["w"] / 2, g["y"] + g["h"] / 2, float(getattr(sh, "rotation", 0) or 0),
+                      gxf is not None and gxf.get("flipH") == "1", gxf is not None and gxf.get("flipV") == "1")
+                if turns:  # the group's own frame, before the outer turns moved its centre
+                    me = (g0["x"] + g0["w"] / 2, g0["y"] + g0["h"] / 2, *me[2:])
+                inner = turns + (me,) if (me[2] or me[3] or me[4]) else turns
                 xf = sh._element.grpSpPr.find(qn("a:xfrm"))
                 if xf is None or xf.find(qn("a:off")) is None or xf.find(qn("a:ext")) is None:
-                    return walk(sh.shapes, ax, ay, bx, by, items)  # no transform: children are already in page units
+                    return walk(sh.shapes, ax, ay, bx, by, items, inner)  # no transform: children are already in page units
                 off, ext = xf.find(qn("a:off")), xf.find(qn("a:ext"))
                 choff = xf.find(qn("a:chOff")) if xf.find(qn("a:chOff")) is not None else off  # both optional: identity
                 chext = xf.find(qn("a:chExt")) if xf.find(qn("a:chExt")) is not None else ext
                 sx = int(ext.get("cx")) / max(1, int(chext.get("cx")))
                 sy = int(ext.get("cy")) / max(1, int(chext.get("cy")))
-                return walk(sh.shapes, ax + bx * (int(off.get("x")) - int(choff.get("x")) * sx), ay + by * (int(off.get("y")) - int(choff.get("y")) * sy), bx * sx, by * sy, items)
+                return walk(sh.shapes, ax + bx * (int(off.get("x")) - int(choff.get("x")) * sx), ay + by * (int(off.get("y")) - int(choff.get("y")) * sy), bx * sx, by * sy, items, inner)
             if hasattr(sh, "image"):
                 try:
                     img = sh.image
                 except (AttributeError, ValueError, KeyError):
                     img = None
                 if img is not None:
-                    n_pic[0] += 1
-                    name = f"img-{n_pic[0]}.{img.ext}"
-                    (media / name).write_bytes(img.blob)
+                    h = hashlib.sha1(img.blob).hexdigest()
+                    if h not in by_hash:  # a picture used on many slides is stored once
+                        n_pic[0] += 1
+                        by_hash[h] = f"img-{n_pic[0]}.{img.ext}"
+                        (media / by_hash[h]).write_bytes(img.blob)
+                    name = by_hash[h]
                     items.append({**g, "kind": "picture", "file": f"media/{name}"})
                     return
             if getattr(sh, "has_table", False) and sh.has_table:
@@ -232,10 +297,19 @@ def pptx_extract(path, out_dir):
                 except (AttributeError, TypeError):
                     fill = None
                 text = paras(sh.text_frame) if sh.has_text_frame and sh.text_frame.text.strip() else []
+                try:
+                    line = color(sh.line.color) if sh.line.color.type is not None else None
+                    lw = round(sh.line.width * k, 1) if sh.line.width else None
+                except (AttributeError, TypeError, ValueError):
+                    line, lw = None, None
                 kind = "shape" if shape or fill else "text"
-                items.append({**g, "kind": kind, "shape": shape, "fill": fill, "paras": text})
+                items.append({**g, "kind": kind, "shape": shape, "fill": fill, "line": line, "lw": lw, "paras": text})
             else:
-                items.append({**g, "kind": "unsupported", "type": str(st)})
+                gd = sh._element.find(".//" + qn("a:graphicData"))
+                uri = gd.get("uri", "") if gd is not None else ""
+                kind = ("smartart" if uri.endswith("/diagram") else "chart" if uri.endswith("/chart") else "ole" if uri.endswith("/ole")
+                        else uri.rstrip("/").rsplit("/", 1)[-1] if uri else str(st))
+                items.append({**g, "kind": "unsupported", "type": kind})
 
     out = {"size": {"w": 1280, "h": round(prs.slide_height * k, 1), "ratio": ratio}, "theme": theme(prs), "slides": []}
     for i, s in enumerate(slides, 1):

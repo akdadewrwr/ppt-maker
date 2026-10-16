@@ -1,5 +1,5 @@
 """ppt-maker pptx export: slides measured in the page (export.js) -> an editable .pptx. python-pptx is imported lazily."""
-import base64, binascii, io, os, re
+import base64, binascii, io, os, re, secrets
 from pathlib import Path
 
 PX = 9525  # EMU per CSS px
@@ -101,6 +101,10 @@ def build(data, out):
             f.bold, f.italic, f.underline = bool(r.get("b")), bool(r.get("i")), bool(r.get("u"))
             if r.get("color"):
                 f.color.rgb = rgb(r["color"])
+                a = r.get("a")
+                if a is not None and a < 1:  # semi-transparent text
+                    clr = run._r.get_or_add_rPr().find(qn("a:solidFill"))[0]
+                    clr.append(clr.makeelement(qn("a:alpha"), {"val": str(int(a * 100000))}))
             if r.get("font"):
                 f.name = r["font"]
                 rPr = run._r.get_or_add_rPr()
@@ -194,10 +198,14 @@ def build(data, out):
         if sd.get("bg"):
             s.background.fill.solid()
             s.background.fill.fore_color.rgb = rgb(sd["bg"])
+        tree = s.shapes._spTree
         for it in sd.get("items") or []:
+            n = len(tree)
             try:
                 kind = add[it["k"]](s, it)
             except Exception as e:  # noqa: BLE001 — one bad item (e.g. PIL's OSError on a non-image) must not sink the deck
+                for el in list(tree)[n:]:  # nor leave half of itself behind
+                    tree.remove(el)
                 rep["skipped"].append({"id": it.get("id", ""), "why": f"无法生成：{e}"})
                 continue
             if kind == "raster":
@@ -205,7 +213,7 @@ def build(data, out):
             else:
                 rep[kind] += 1
     out = Path(out)
-    tmp = out.with_name(out.name + ".part")
+    tmp = out.with_name(f".{out.stem}-{secrets.token_hex(4)}.part")  # never shared by two exports
     try:
         prs.save(str(tmp))
         os.replace(tmp, out)

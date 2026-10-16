@@ -37,10 +37,11 @@ window.PPTExport = (() => {
     (function collect(node) {
       for (const n of node.childNodes) {
         if (n.nodeType === 3) {
+          if (getComputedStyle(n.parentElement).visibility === 'hidden') continue; // hidden text stays hidden
           const pre = /pre/.test(getComputedStyle(n.parentElement).whiteSpace);
           const t = pre ? n.data : n.data.replace(/\s+/g, ' ');
           if (t) runs.push(run(t, getComputedStyle(n.parentElement)));
-        } else if (n.nodeType === 1 && !n.matches(SKIP)) {
+        } else if (n.nodeType === 1 && !n.matches(SKIP) && getComputedStyle(n).display !== 'none') {
           if (n.tagName === 'BR') runs.push({ br: true });
           else if (!blockish(n) && !RASTER_TAGS[n.tagName.toUpperCase()] && n.tagName !== 'IMG') collect(n);
         }
@@ -65,10 +66,17 @@ window.PPTExport = (() => {
     return { left: l, top: t, width: Math.max(...rs.map((r) => r.right)) - l, height: Math.max(...rs.map((r) => r.bottom)) - t };
   }
   async function dataUrl(src) {
-    if (src.startsWith('data:image/')) return src;
+    if (/^data:image\/(png|jpeg|gif)[;,]/.test(src)) return src; // other inline pictures (webp, svg) are converted below
     const b = await (await fetch(src, { signal: AbortSignal.timeout(5000) })).blob(); // a slow external picture is skipped, not waited on
     if (!b.type.startsWith('image/')) throw new Error('不是图片');
-    return new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
+    if (/^image\/(png|jpeg|gif)$/.test(b.type)) return new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
+    const url = URL.createObjectURL(b); // WebP, SVG, …: PowerPoint wants PNG
+    try {
+      const im = new Image(); im.src = url; await im.decode();
+      const c = document.createElement('canvas'); c.width = im.naturalWidth || 300; c.height = im.naturalHeight || 150;
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      return c.toDataURL('image/png');
+    } finally { URL.revokeObjectURL(url); }
   }
 
   async function measureSlide(slide, skipped) {
@@ -109,14 +117,16 @@ window.PPTExport = (() => {
       } else raster(el, kind === 'icon' ? '图标' : kind === 'ink' ? '笔迹' : '对象');
     }
     function image(img, g = rel(img.getBoundingClientRect())) {
-      const it = { k: 'image', ...g, src: '', crop: null };
+      const it = { k: 'image', ...g, id: idOf(img), src: '', crop: null };
       const nr = img.naturalWidth / (img.naturalHeight || 1), br = g.w / (g.h || 1);
       if (getComputedStyle(img).objectFit === 'cover' && img.naturalWidth) {
         const c = nr > br ? (1 - br / nr) / 2 : 0, v = nr < br ? (1 - nr / br) / 2 : 0;
         it.crop = { l: c, r: c, t: v, b: v };
+      } else if (getComputedStyle(img).objectFit === 'contain' && img.naturalWidth) { // letterboxed: the picture is smaller than its box
+        if (nr > br) { const h = it.w / nr; it.y += (it.h - h) / 2; it.h = h; } else { const w = it.h * nr; it.x += (it.w - w) / 2; it.w = w; }
       }
       items.push(it);
-      pending.push(dataUrl(img.currentSrc || img.src).then((u) => { it.src = u; }).catch(() => { items.splice(items.indexOf(it), 1); skipped.push({ id: idOf(img), why: '图片取不到' }); }));
+      pending.push(dataUrl(img.currentSrc || img.src).then((u) => { it.src = u; }).catch(() => { drop(it); skipped.push({ id: idOf(img), why: '图片取不到' }); }));
     }
     function table(el) {
       const rows = [...el.rows];
@@ -126,7 +136,14 @@ window.PPTExport = (() => {
         rows: rows.map((r) => r.getBoundingClientRect().height / k), border: fcs && parseFloat(fcs.borderTopWidth) ? b?.hex || null : null, bw: fcs ? parseFloat(fcs.borderTopWidth) || 0 : 0,
         cells: rows.map((r) => [...r.cells].map((c) => ({ paras: [para(c)], fill: col(getComputedStyle(c).backgroundColor)?.hex || null }))) });
     }
-    function walk(el) {
+    const drop = (it) => { const i = items.indexOf(it); if (i >= 0) items.splice(i, 1); };
+    function walk(el) { // a measuring error turns the element into a picture instead of failing the export
+      const n = items.length, nr = rasters.length;
+      try { walkOne(el); } catch {
+        items.length = n; rasters.length = nr; raster(el, '测量出错');
+      }
+    }
+    function walkOne(el) {
       if (el.matches(SKIP)) return;
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden') return;

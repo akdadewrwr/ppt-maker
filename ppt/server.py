@@ -461,8 +461,13 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw or b"null")
             if not isinstance(data, dict) or not isinstance(data.get("slides"), list):
                 raise ValueError("导出数据格式不对")
-            out = deck / "export" / f"{deck.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pptx"
+            stem = f"{deck.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            out = deck / "export" / f"{stem}.pptx"
             out.parent.mkdir(exist_ok=True)
+            n = 1
+            while out.exists():  # two exports in the same second
+                n += 1
+                out = deck / "export" / f"{stem}-{n}.pptx"
             rep = exporter.build(data, out)  # outside LOCK: can take seconds
             res = {"file": str(out.resolve()), "url": "/export/" + quote(out.name), "summary": exporter.summary(rep), "report": rep}
             return self.send(200, export_result(deck, res))
@@ -806,9 +811,8 @@ def export_cli(deck, port):
             time.sleep(0.25)
         raise SystemExit("导出没有完成（120 秒内没有结果）；在浏览器里点\"导出 PPT\"看看提示")
     finally:
-        p.kill()
-        p.wait(10)
-        shutil.rmtree(prof, ignore_errors=True)
+        importer.kill_tree(p)  # Edge's helper processes too, or they keep the temp profile
+        importer.rmtree_retry(prof)
 
 
 def export_result(deck, res):

@@ -481,6 +481,22 @@ class ExporterTests(unittest.TestCase):
         self.assertIn('<a:latin typeface="Inter"', xml)
         self.assertIn('<a:ea typeface="Microsoft YaHei"', xml)
 
+    def test_a_failing_item_leaves_no_half_built_shape(self):  # minor: a ragged table failed after its frame was added
+        from pptx import Presentation
+        cell = lambda t: {"paras": [{"runs": [{"t": t, "size": 16}]}], "fill": None}
+        data = {"slides": [{"id": "s", "bg": None, "items": [{"k": "table", "id": "b-t", "x": 0, "y": 0, "w": 200, "h": 80, "cols": [100, 100], "rows": [40, 40],
+                                                            "border": None, "bw": 0, "cells": [[cell("a"), cell("b")], [cell("c"), cell("d"), cell("e")]]}]}]}
+        rep = exporter.build(data, self.tmp / "h.pptx")
+        self.assertEqual([s["id"] for s in rep["skipped"]], ["b-t"])
+        self.assertEqual(len(Presentation(str(self.tmp / "h.pptx")).slides[0].shapes), 0)
+
+    def test_text_transparency_is_kept(self):  # minor: run alpha was ignored
+        from pptx import Presentation
+        para = {"runs": [{"t": "半透明", "size": 16, "color": "112233", "a": 0.5}]}
+        exporter.build({"slides": [{"id": "s", "bg": None, "items": [{"k": "text", "x": 0, "y": 0, "w": 90, "h": 20, "paras": [para]}]}]}, self.tmp / "a.pptx")
+        xml = Presentation(str(self.tmp / "a.pptx")).slides[0].shapes[0].text_frame.paragraphs[0].runs[0]._r.xml
+        self.assertIn('<a:alpha val="50000"/>', xml)
+
     def test_summary_names_what_became_pictures(self):
         rep = {"slides": 4, "text": 18, "shape": 6, "table": 1, "image": 2, "raster": [{"id": "b-chart", "why": "SVG 插图"}], "skipped": []}
         self.assertEqual(exporter.summary(rep), "导出完成：4 页，18 个文本框、6 个形状、1 个表格、2 张图片；1 处转成了图片（b-chart：SVG 插图）")
@@ -529,6 +545,14 @@ class ExportApiTests(ServerCase):
         with mock.patch.object(exporter, "build", side_effect=exporter.Missing("导出需要 python-pptx：pip install python-pptx")):
             self.post_raw("/api/export?t=tok", json.dumps(sample_export()).encode())
         self.assertEqual(json.loads((self.deck / ".ppt" / "export.json").read_text(encoding="utf-8")), {"error": "导出需要 python-pptx：pip install python-pptx"})
+
+    def test_two_exports_in_the_same_second_get_two_files(self):  # minor
+        fixed = server.datetime(2026, 10, 16, 9, 30, 0)
+        with mock.patch.object(server, "datetime", mock.Mock(now=mock.Mock(return_value=fixed))):
+            a = self.post_raw("/api/export?t=tok", json.dumps(sample_export()).encode())[1]
+            b = self.post_raw("/api/export?t=tok", json.dumps(sample_export()).encode())[1]
+        self.assertNotEqual(a["file"], b["file"])
+        self.assertTrue(Path(a["file"]).is_file() and Path(b["file"]).is_file())
 
     def test_export_needs_the_token_and_a_sane_body(self):
         self.assertEqual(self.post_raw("/api/export?t=bad", b"{}")[0], 403)
@@ -699,6 +723,67 @@ class PptxImportTests(ServerCase):
             st, d = self.up(src.read_bytes(), "x.pptx")
         self.assertEqual((st, d["error"]), (400, "无法读取这个 pptx"))
         self.assertEqual(list((self.deck / "imports").iterdir()), [])
+
+    def test_smartart_rotation_outlines_and_shared_pictures(self):  # minors: SmartArt type, group rotation, outlines, duplicate pictures
+        from pptx import Presentation
+        from pptx.chart.data import CategoryChartData
+        from pptx.dml.color import RGBColor
+        from pptx.enum.chart import XL_CHART_TYPE
+        from pptx.enum.shapes import MSO_SHAPE
+        from pptx.oxml.ns import qn
+        from pptx.util import Inches, Pt
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        cd = CategoryChartData(); cd.categories = ["a"]; cd.add_series("s", (1,))
+        gf = s.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(2), Inches(2), cd)
+        gf._element.find(".//" + qn("a:graphicData")).set("uri", "http://schemas.openxmlformats.org/drawingml/2006/diagram")
+        grp = s.shapes.add_group_shape()
+        grp.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(4), Inches(1), Inches(2), Inches(2))  # group spans 4..8in x, 1..3in y
+        grp.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(7), Inches(2), Inches(1), Inches(1))  # off-centre child: (7.5, 2.5)in centre
+        grp.rotation = 90
+        ov = s.shapes.add_shape(MSO_SHAPE.OVAL, Inches(9), Inches(1), Inches(1), Inches(1))
+        ov.line.color.rgb = RGBColor(0xFF, 0x00, 0x00); ov.line.width = Pt(3)
+        for x in (10, 11):
+            s.shapes.add_picture(io.BytesIO(base64.b64decode(PNG_1PX)), Inches(x), Inches(4), Inches(1), Inches(1))
+        src = self.tmp / "m.pptx"
+        prs.save(str(src))
+        with mock.patch.object(importer, "render_pdf", return_value=None):
+            self.assertEqual(self.up(src.read_bytes(), "m.pptx")[0], 200)
+        e = inbox(self.deck)[-1]
+        items = json.loads(Path(e["source"]).read_text(encoding="utf-8"))["slides"][0]["items"]
+        self.assertEqual([i["type"] for i in items if i["kind"] == "unsupported"], ["smartart"])
+        small = [i for i in items if i.get("shape") == "RECTANGLE" and round(i["w"]) == 96][0]
+        # group centre (6in, 2in) = (576, 192)px; the child centre (720, 240)px turned 90° clockwise lands at (528, 336)
+        self.assertEqual((round(small["x"] + small["w"] / 2), round(small["y"] + small["h"] / 2), small["rotation"]), (528, 336, 90.0))
+        oval = [i for i in items if i.get("shape") == "OVAL"][0]
+        self.assertEqual((oval["line"], round(oval["lw"])), ("FF0000", 4))
+        pics = [i for i in items if i["kind"] == "picture"]
+        self.assertEqual(len({p["file"] for p in pics}), 1)
+        self.assertEqual(len(list(Path(e["media"]).iterdir())), 1)
+
+    def test_a_pptx_that_unpacks_huge_is_refused(self):  # minor: no unpacked-size cap
+        src = self.tmp / "big.pptx"
+        make_pptx(src)
+        with mock.patch.object(importer, "MAX_UNPACKED", 1000):
+            self.assertEqual(self.up(src.read_bytes(), "big.pptx"), (400, {"error": "pptx 解压后超过 200MB"}))
+        self.assertEqual(list((self.deck / "imports").iterdir()), [])
+
+    def test_kill_tree_ends_grandchildren(self):  # minor: a timed-out LibreOffice / Edge left helper processes behind
+        pidfile = self.tmp / "pid"
+        code = ("import subprocess, sys, time; c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+                f" open({str(pidfile)!r}, 'w').write(str(c.pid)); time.sleep(60)")
+        p = subprocess.Popen([sys.executable, "-c", code])
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text():
+                break
+            _time.sleep(0.1)
+        child = int(pidfile.read_text())
+        importer.kill_tree(p)
+        _time.sleep(1)
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {child}"], capture_output=True, text=True).stdout if os.name == "nt" else ""
+        self.assertNotIn(str(child), out)
+        self.assertIsNotNone(p.poll())
 
     def test_no_python_pptx_gives_503(self):
         src = self.tmp / "old.pptx"

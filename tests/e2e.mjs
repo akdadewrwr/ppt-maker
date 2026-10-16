@@ -733,7 +733,7 @@ try {
   <div class="block" id="b-ex-ext" style="grid-area:6/11/9/14"><img src="https://invalid.example/x.png" alt="" style="width:100px;height:100px"></div>
   <div class="obj" id="o-ex-shape" data-kind="shape" data-shape="ellipse" style="left:1000px;top:80px;width:200px;height:100px;fill:#38bdf8;stroke:#ffffff;stroke-width:2"><svg viewBox="0 0 200 100"><ellipse cx="100" cy="50" rx="99" ry="49"/></svg><div class="obj-text">圆</div></div>
   <div class="obj" id="o-ex-arrow" data-kind="arrow" data-shape="arrow" style="left:900px;top:600px;width:300px;height:40px;stroke:#ff0000;stroke-width:3"><svg viewBox="0 0 300 40"><line x1="8" y1="20" x2="292" y2="20"/><polyline points="280,12 292,20 280,28" fill="none"/></svg></div>
-  <div class="block" id="b-ex-long" style="grid-area:6/14/9/17;padding:20px;font-size:20px">这一段文字很长很长，在窄窄的块里一定会折成好几行才能放下</div>
+  <div class="block" id="b-ex-long" style="grid-area:6/14/9/17;padding:20px;font-size:20px">这一段文字很长很长，在窄窄的块里一定会折成好几行才能放下<span style="display:none">不该出现</span><span style="visibility:hidden">也不该</span></div>
   <div class="block" id="b-ex-plain" style="grid-area:1/12/3/14"><ul style="margin:0;list-style:none;font-size:18px"><li>无符号</li></ul></div>
   <div class="block" id="b-ex-font" style="grid-area:9/2/10/8;font-family:Inter,'PingFang SC',sans-serif;font-size:18px">Inter 加中文</div>
 </section>
@@ -775,6 +775,26 @@ try {
   const ulLeft = await ev(`(() => { const u = document.querySelector('#b-ex-box ul'), s = document.getElementById('s-export'), k = s.getBoundingClientRect().width / 1280;
     return (u.getBoundingClientRect().left - s.getBoundingClientRect().left) / k + parseFloat(getComputedStyle(u).paddingLeft); })()`);
   check('X list text lands where the page puts it (the bullet indent is taken out of the box)', xlist && Math.abs(xlist.x + 24 - ulLeft) < 2, JSON.stringify([xlist?.x, ulLeft]));
+  check('X hidden inline text is not exported', !JSON.stringify(ms).includes('不该出现') && !JSON.stringify(ms).includes('也不该'));
+  await ev(`(() => { const s = document.getElementById('s-export'), c = document.createElement('canvas'); c.width = c.height = 4;
+    const g = c.getContext('2d'); g.fillStyle = '#00f'; g.fillRect(0, 0, 4, 4);
+    const add = (id, area, src, css) => { const b = document.createElement('div'); b.className = 'block'; b.id = id; b.style.gridArea = area;
+      const i = document.createElement('img'); i.src = src; i.style.cssText = css; b.append(i); s.append(b); };
+    add('b-ex-webp', '9/9/10/10', c.toDataURL('image/webp'), 'width:40px;height:40px');
+    add('b-ex-svgimg', '9/10/10/11', 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>'), 'width:40px;height:40px');
+    add('b-ex-contain', '9/11/10/14', c.toDataURL('image/png'), 'width:200px;height:40px;object-fit:contain');
+    Object.defineProperty(document.querySelector('#b-ex-table table'), 'rows', { configurable: true, get() { throw new Error('坏表格'); } }); })()`);
+  await sleep(500);
+  const mm = JSON.parse(await ev(`PPTExport.measure([document.getElementById('s-export')]).then((d) => JSON.stringify(d))`));
+  const mi = (id) => mm.slides[0].items.find((i) => i.id === id);
+  check('X WebP and SVG pictures are turned into PNG, and carry their id', mi('b-ex-webp')?.k === 'image' && mi('b-ex-webp').src.startsWith('data:image/png')
+    && mi('b-ex-svgimg')?.src.startsWith('data:image/png'), JSON.stringify([mi('b-ex-webp')?.src.slice(0, 22), mi('b-ex-svgimg')?.src.slice(0, 22)]));
+  const ct = mi('b-ex-contain'), ctBox = await ev(`(() => { const i = document.querySelector('#b-ex-contain img'), s = document.getElementById('s-export'), k = s.getBoundingClientRect().width / 1280;
+    return (i.getBoundingClientRect().left - s.getBoundingClientRect().left) / k; })()`);
+  check('X an object-fit:contain picture keeps its shape', ct && Math.abs(ct.w - 40) < 1 && Math.abs(ct.h - 40) < 1 && Math.abs(ct.x - (ctBox + 80)) < 1, JSON.stringify([ct?.x, ct?.w, ct?.h, ctBox]));
+  check('X an element whose measuring fails becomes a picture instead of failing the export', mm.slides[0].items.some((i) => i.k === 'raster' && i.id === 'b-ex-table' && i.why === '测量出错'),
+    JSON.stringify(mm.slides[0].items.filter((i) => i.id === 'b-ex-table')).slice(0, 200));
+  await ev(`(() => { delete document.querySelector('#b-ex-table table').rows; ['b-ex-webp', 'b-ex-svgimg', 'b-ex-contain'].forEach((id) => document.getElementById(id).remove()); })()`);
   check('X an image that cannot be fetched is skipped, not fatal', ms.skipped.some((s) => s.id === 'b-ex-ext'), JSON.stringify(ms.skipped));
   { const lr = await rectOf('#b-ex-long'); await dblclick(lr.l + 30, lr.t + 30); await sleep(300); }
   const editingBefore = await ev(`!!document.querySelector('[contenteditable="true"]')`);
@@ -805,6 +825,12 @@ print(json.dumps({"n": len(p.slides), "texts": [sh.text_frame.text for s in p.sl
     const took = Date.now() - te; await sleep(1000);
     check('X a terminal-driven export (export=1) writes the file within 20 s (a picture that never loads is skipped) and downloads nothing', took < 20000 && fs.existsSync(path.join(DECK, '.ppt', 'export.json')) && fs.readdirSync(DL).length === before, JSON.stringify([before, fs.readdirSync(DL), fs.existsSync(path.join(DECK, '.ppt', 'export.json')), took]));
     await open(url); await sleep(800); }
+  { b9 = await byTitle('导出成可在 PowerPoint'); await click(b9.x, b9.y); await sleep(200);
+    fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace('</body>', '<!-- changed during export --></body>'));
+    let seen = false;
+    for (let i = 0; i < 100 && !seen; i++) { await sleep(300); seen = ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导出完成'); }
+    check('X a deck change during an export waits for it to finish before reloading', seen);
+    await sleep(2500); }
   const pptxPath = path.join(SCRATCH, '旧稿.pptx');
   execFileSync('python', ['-c', `import sys
 from pptx import Presentation

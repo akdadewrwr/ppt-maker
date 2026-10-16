@@ -1,19 +1,25 @@
 ## 上一轮完成
-- 合入 main：服务独立运行。server.py --detach 以脱离的进程启动（不受 Claude Code 内存回收影响），已在运行就沿用；.ppt/server.json 记 pid/port/url/token；--stop 关闭；2 小时无访问自动退出。
-- --tail 启动时先输出"最近完成"（最近 10 条已完成及回执，给新会话当前情），服务停了输出"服务已停止"。
-- ppt.md 和全局 ppt.md 改为 --detach 前台启动、监听停了就重挂、"服务已停止"时重启、--stop 关闭。
-- main 测试：server 105 OK、selftest 99/99、e2e 171/171；实测通过 Bash 工具启动后命令结束服务仍存活。
+- 子项目 6（导出 / 导入 PPTX）：spec、plan、6 个 task 全部完成，分支 feat/pptx（到 ec19515，已推送）。
+- 测试：server OK、selftest 99/99、e2e 182/182。真实验收通过（临时项目，验完已删除）。
+- 整个分支的最终审查已派出：opus 审查员在后台运行。
 
 ## 关键结论
-- 被关原因：整机内存几乎耗尽（16GB 剩 0.1GB），Claude Code 回收后台任务；服务本身只占 12–28MB，没有漏内存。
-- 服务和 Claude 只通过 deck 目录的文件交流（inbox/outbox），服务挂在谁下面无关；监听仍是会话的后台任务。
-- 监听每 5 秒探测一次服务，这也算访问，所以监听挂着时服务不会因空闲退出。
+- 导出流程：export.js 在页面里测量，再 POST /api/export，由 exporter.py（python-pptx）生成文件。
+  - 文字、框、表格、图片、形状、箭头导出为原生可编辑对象；SVG、渐变、阴影、图标等截成 2 倍图。
+  - 生成后自动下载并弹出报告；终端导出用 --export（无头 Edge 打开 export=1 的页面）。
+- 导入流程：importer.py 拆出 slides.json、media/，再用 LibreOffice 转出 slides.pdf，发 hint:pptx 的 import 事件，由 Claude 按 ppt.md 重建。
+- 执行中的决定（Ruling）：
+  - 文本框跟随块的内容宽度，单行文字不自动换行；
+  - 列表文本框扣掉项目符号的缩进；
+  - 取不到的图片在截图时用透明占位；
+  - 主题的系统色取实际颜色值；
+  - 另有几处只涉及测试的修正。
 
 ## 改动文件
-- ppt/server.py、ppt/test_server.py、.claude/commands/ppt.md；~/.claude/commands/ppt.md（仓库外）
+- ppt/export.js（新）、ppt/exporter.py（新）、importer.py、server.py、editor.js、toolbar.js、test_server.py、tests/e2e.mjs、ppt.md；spec 与 plan
 
 ## 当前 blocker
-- 无（project-2027/decks/试用 仍是旧稿复制，由用户决定）
+- 等审查结果：先用 TDD 修完 Critical / Important，再问用户是否合并。
 
 ## 下一步
-- 等用户定：更多 UI 改进，或导出 pptx。
+- 修完审查问题，问用户是否合并 feat/pptx。

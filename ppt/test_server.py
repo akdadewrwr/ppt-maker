@@ -1,4 +1,4 @@
-import contextlib, http.client, io, json, os, shutil, socket, sys, tempfile, threading, unittest, zipfile
+import contextlib, http.client, io, json, os, shutil, socket, subprocess, sys, tempfile, threading, unittest, zipfile
 import time as _time
 from pathlib import Path
 from unittest import mock
@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import build_icons
 
 TEMPLATE = Path(__file__).resolve().parent / "template.html"
+SERVER_PY = str(Path(__file__).resolve().parent / "server.py")
 
 
 class ServerCase(unittest.TestCase):
@@ -302,6 +303,8 @@ class NewDeckTests(unittest.TestCase):  # a new deck comes from the template, ma
         self.assertIn("已从模板新建", out.getvalue())
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):  # other commands still need a real deck
             server.main(["--tail", str(proj / "decks" / "没有")])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            server.main(["--stop", str(proj / "decks" / "没有")])
         self.assertFalse((proj / "decks" / "没有").exists())
 
     def test_an_existing_deck_is_left_alone(self):
@@ -310,6 +313,70 @@ class NewDeckTests(unittest.TestCase):  # a new deck comes from the template, ma
         (proj / "deck.html").write_text("<p>mine</p>", encoding="utf-8")
         self.assertFalse(server.ensure_deck(proj))
         self.assertEqual((proj / "deck.html").read_text(encoding="utf-8"), "<p>mine</p>")
+
+
+class DetachTests(unittest.TestCase):  # the server runs on its own, not as a Claude Code background task
+    def setUp(self):
+        self.proj = Path(tempfile.mkdtemp())
+        self.deck = self.proj / "decks" / "d"
+
+    def tearDown(self):
+        subprocess.run([sys.executable, SERVER_PY, "--stop", str(self.deck)], capture_output=True, timeout=30)
+        shutil.rmtree(self.proj, ignore_errors=True)
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, SERVER_PY, *args], capture_output=True, text=True, encoding="utf-8", timeout=60)
+
+    def get(self, info, path):
+        c = http.client.HTTPConnection("127.0.0.1", info["port"], timeout=5)
+        c.request("GET", path, headers={"Host": f"127.0.0.1:{info['port']}"})
+        status = c.getresponse().status
+        c.close()
+        return status
+
+    def test_detach_outlives_the_launcher_is_reused_and_stops(self):
+        r1 = self.run_cli("--detach", "--no-open", "--port", "8840", str(self.deck))  # returns: the launcher has exited
+        self.assertEqual(r1.returncode, 0, r1.stderr)
+        self.assertIn("已从模板新建", r1.stdout)
+        self.assertIn("新启动", r1.stdout)
+        info = json.loads((server.runtime(self.deck) / "server.json").read_text(encoding="utf-8"))
+        self.assertIn(info["url"], r1.stdout)
+        self.assertEqual(self.get(info, f"/?t={info['token']}"), 200)
+        r2 = self.run_cli("--detach", "--no-open", "--port", "8840", str(self.deck))
+        self.assertIn("已在运行", r2.stdout)
+        self.assertIn(info["url"], r2.stdout)
+        self.assertEqual(json.loads((server.runtime(self.deck) / "server.json").read_text(encoding="utf-8"))["pid"], info["pid"])  # not a second server
+        r3 = self.run_cli("--stop", str(self.deck))
+        self.assertIn("已停止", r3.stdout)
+        self.assertFalse((server.runtime(self.deck) / "server.json").exists())
+        with self.assertRaises(OSError):
+            self.get(info, "/")
+
+    def test_an_idle_server_exits_on_its_own(self):
+        server.ensure_deck(self.deck)
+        srv = server.make_server(self.deck, port=0, token="tok", idle=0.5)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        t.join(5)
+        srv.server_close()
+        self.assertFalse(t.is_alive())
+
+    def test_tail_tells_recent_work_and_a_stopped_server(self):
+        server.ensure_deck(self.deck)
+        rt = server.runtime(self.deck)
+        for i in range(1, 13):
+            server.append_jsonl(rt / "inbox.jsonl", {"id": f"e{i}", "type": "intent", "text": f"改第{i}处"})
+            if i < 12:
+                server.reply(self.deck, f"e{i}", f"改好了{i}")
+        (rt / "server.json").write_text(json.dumps({"pid": 0, "port": 9, "url": "x", "token": "t"}), encoding="utf-8")  # a server that is gone
+        lines = []
+        server.tail(self.deck, lines.append, stop=lambda: True)
+        recent = [l for l in lines if l.startswith("最近完成")]
+        self.assertEqual(len(recent), 10)
+        self.assertIn("e11", recent[-1])
+        self.assertIn("改好了11", recent[-1])
+        self.assertTrue(any(l.startswith("e12 ") for l in lines))
+        self.assertTrue(any("服务已停止" in l for l in lines))
 
 
 class DrainTests(unittest.TestCase):
@@ -1119,12 +1186,12 @@ class CliTests(ServerCase):
         th = threading.Thread(target=server.tail, args=(self.deck, lines.append, done.is_set, 0.05), daemon=True)
         th.start()
         _time.sleep(0.3)
-        self.assertEqual([l.split()[0] for l in lines], ["e2", "e3"])
+        self.assertEqual([l.split()[1] if l.startswith("最近完成") else l.split()[0] for l in lines], ["e1", "e2", "e3"])  # finished work first, as context
         self.req("POST", "/api/event?t=tok", {"type": "lint", "issues": [{"block": "b", "kind": "overflow"}]})
         _time.sleep(0.3)
         done.set()
         th.join(2)
-        self.assertEqual([l.split()[0] for l in lines], ["e2", "e3", "e4"])
+        self.assertEqual([l.split()[0] for l in lines][1:], ["e2", "e3", "e4"])
         self.assertTrue((self.deck / ".ppt" / "heartbeat").exists())
 
     def test_cli_reply(self):

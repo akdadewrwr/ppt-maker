@@ -5,7 +5,7 @@
   python ppt/server.py --tail <deck_dir>                        print pending/new events, one line each
   python ppt/server.py --reply <deck_dir> <event_id> [text] [--ack]
 """
-import argparse, base64, hashlib, json, mimetypes, re, secrets, sys, threading, time, webbrowser
+import argparse, base64, hashlib, http.client, json, mimetypes, os, re, secrets, signal, subprocess, sys, threading, time, webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +29,10 @@ REPLY_TYPES = EVENT_TYPES | {"kb", "import"}  # kb events are written by the ser
 FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": str, "rect": dict, "cells": str,
                "blocks": list, "text": str, "issues": list, "quote": dict, "notes": list, "kb": list, "items": list}
 HEARTBEAT_SECS = 10
+IDLE_SECS = 2 * 3600  # a server nobody has visited for this long exits on its own
+SERVER_CHECK_SECS = 5
+RECENT_DONE = 10
+STOPPED = "服务已停止：重新运行 --detach 启动，再把网址告诉用户"
 ONLINE_SECS = 30
 HISTORY_MAX = 200
 WATCH_SECS = 0.5
@@ -255,14 +259,25 @@ def tail(deck, emit, stop=lambda: False, interval=0.5):
     rt = runtime(deck)
     inbox, hb = rt / "inbox.jsonl", rt / "heartbeat"
     events, st = read_jsonl(inbox), statuses(deck)
+    said = {r.get("re"): r.get("text", "") for r in outbox_rows(deck) if not r.get("ack")}
+    for e in [e for e in events if e.get("type") in REPLY_TYPES and st.get(e.get("id")) == "done"][-RECENT_DONE:]:
+        emit(f"最近完成 {safe_summary(e)} → {said.get(e.get('id'), '')[:120]}")  # context for a fresh session
     for e in events:
         if e.get("type") in REPLY_TYPES and st.get(e.get("id")) != "done":
             emit(safe_summary(e))
-    seen, beat = len(events), 0.0
+    up = server_up(deck)
+    if up is False:
+        emit(STOPPED)
+    seen, beat, checked = len(events), 0.0, time.time()
     while not stop():
         if time.time() - beat >= HEARTBEAT_SECS:
             hb.write_text(now_iso(), encoding="utf-8")
             beat = time.time()
+        if time.time() - checked >= SERVER_CHECK_SECS:
+            now = server_up(deck)
+            if up and not now:
+                emit(STOPPED)
+            up, checked = now, time.time()
         events = read_jsonl(inbox)
         for e in events[seen:]:
             emit(safe_summary(e))
@@ -401,6 +416,7 @@ class Handler(BaseHTTPRequestHandler):
     def guard(self, need_token):
         """Host check always (DNS rebinding); token for pages/APIs. Returns parsed URL or None."""
         self.stream_len = 0
+        self.server.last_seen = time.time()
         if self.command in ("POST", "PUT"):
             # read the body before any reply: closing with unread bytes makes Windows reset the
             # socket, and the client never sees our 403/404
@@ -653,7 +669,79 @@ def ensure_deck(deck):
     return True
 
 
-def make_server(deck, port=8765, token=None, tries=20):
+def server_file(deck):
+    return runtime(deck) / "server.json"
+
+
+def live_server(deck):
+    """The running server of this deck ({pid, port, url, token}), or None. Asks it, so a stale file never counts."""
+    try:
+        info = json.loads(server_file(deck).read_text(encoding="utf-8"))
+        c = http.client.HTTPConnection("127.0.0.1", int(info["port"]), timeout=2)
+        c.request("GET", f"/api/state?t={info['token']}", headers={"Host": f"127.0.0.1:{info['port']}"})
+        ok = c.getresponse().status == 200
+        c.close()
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
+        return None
+    return info if ok else None
+
+
+def server_up(deck):
+    """None: no server recorded; True / False: recorded and answering / gone."""
+    return None if not server_file(deck).exists() else live_server(deck) is not None
+
+
+def detach(deck, port, open_browser):
+    """Start the server as its own process (not a child Claude Code can reap), or reuse the one already running."""
+    info = live_server(deck)
+    if info:
+        return print(f"ppt-maker 已在运行 {deck.name}: {info['url']}", flush=True)
+    if ensure_deck(deck):
+        print(f"已从模板新建 {deck / 'deck.html'}", flush=True)
+    server_file(deck).unlink(missing_ok=True)
+    cmd = [sys.executable, str(Path(__file__).resolve()), "--no-open", "--port", str(port), str(deck)]
+    with (runtime(deck) / "server.log").open("ab") as log:
+        opts = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
+        if os.name == "nt":
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            try:  # also leave the job object of the shell that started us, when it allows that
+                subprocess.Popen(cmd, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **opts)
+            except OSError:
+                subprocess.Popen(cmd, creationflags=flags, **opts)
+        else:
+            subprocess.Popen(cmd, start_new_session=True, **opts)
+    for _ in range(60):
+        info = live_server(deck)
+        if info:
+            break
+        time.sleep(0.25)
+    else:
+        raise SystemExit(f"服务没能启动，见 {runtime(deck) / 'server.log'}")
+    print(f"ppt-maker 新启动 {deck.name}: {info['url']}", flush=True)
+    if open_browser:
+        webbrowser.open(info["url"])
+
+
+def stop_server(deck):
+    info = live_server(deck)
+    if info:
+        os.kill(int(info["pid"]), signal.SIGTERM)  # Windows: TerminateProcess
+        for _ in range(40):
+            if not live_server(deck):
+                break
+            time.sleep(0.25)
+    server_file(deck).unlink(missing_ok=True)
+    print(f"{deck.name}: 服务已停止" if info else f"{deck.name}: 没有在运行的服务", flush=True)
+
+
+def idle_exit(srv, idle):
+    while not srv.stopped.wait(min(idle / 2, 30)):
+        if time.time() - srv.last_seen > idle:
+            srv.shutdown()
+            return
+
+
+def make_server(deck, port=8765, token=None, tries=20, idle=IDLE_SECS):
     for p in range(port, port + tries):
         try:
             srv = Server(("127.0.0.1", p), Handler)
@@ -673,6 +761,8 @@ def make_server(deck, port=8765, token=None, tries=20):
     with LOCK:
         srv.history = History(srv.deck)
     threading.Thread(target=watch, args=(srv,), daemon=True).start()
+    srv.last_seen = time.time()
+    threading.Thread(target=idle_exit, args=(srv, idle), daemon=True).start()
     return srv
 
 
@@ -689,14 +779,18 @@ def main(argv=None):
     ap.add_argument("--import", dest="import_src", action="store_true", help="import html: <deck> <path-or-url> [append|replace]")
     ap.add_argument("--kb-add", action="store_true", help="add to a kb: <deck> <scope> <file|web|ref> <path-or-url> [kind]")
     ap.add_argument("--kb-fail", action="store_true", help="mark a kb item failed: <deck> <scope> <id> <reason>")
+    ap.add_argument("--detach", action="store_true", help="start the server as its own process, or reuse the running one")
+    ap.add_argument("--stop", action="store_true", help="stop this deck's server")
     a = ap.parse_args(argv)
     deck = Path(a.deck).resolve()
-    serving = not (a.tail or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail)
+    serving = not (a.tail or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail or a.stop)
     made = serving and ensure_deck(deck)  # only starting the server makes a deck; other commands need a real one
     if not (deck / "deck.html").is_file():
         ap.error(f"{deck / 'deck.html'} not found")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if a.stop:
+        return stop_server(deck)
     if a.import_src:
         if not a.rest or (len(a.rest) > 1 and a.rest[1] not in importer.MODES):
             ap.error("--import needs <path-or-url> [append|replace]")
@@ -741,12 +835,24 @@ def main(argv=None):
         return tail(deck, lambda s: print(s, flush=True))
     if made:
         print(f"已从模板新建 {deck / 'deck.html'}", flush=True)
+    if a.detach:
+        return detach(deck, a.port, not a.no_open)
     srv = make_server(deck, a.port)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.token}"
+    me = {"pid": os.getpid(), "port": srv.server_address[1], "url": url, "token": srv.token}
+    server_file(deck).write_text(json.dumps(me), encoding="utf-8")
     print(f"ppt-maker serving {deck.name} at {url}", flush=True)
     if not a.no_open:
         webbrowser.open(url)
-    srv.serve_forever()
+    try:
+        srv.serve_forever()
+    finally:
+        srv.server_close()
+        try:
+            if json.loads(server_file(deck).read_text(encoding="utf-8")).get("pid") == me["pid"]:
+                server_file(deck).unlink()
+        except (OSError, ValueError):
+            pass
 
 
 if __name__ == "__main__":

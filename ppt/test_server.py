@@ -603,7 +603,8 @@ class PptxImportTests(ServerCase):
         self.assertTrue((Path(e["dir"]) / pic["file"]).is_file())
         tbl = [i for i in items if i["kind"] == "table"][0]
         self.assertEqual(tbl["cells"][0][0], "指标")
-        self.assertIn("colors", sj["theme"])
+        self.assertRegex(sj["theme"]["colors"]["dk1"], r"^[0-9A-F]{6}$")  # a system colour gives its real value, not "windowText"
+        self.assertRegex(sj["theme"]["colors"]["accent1"], r"^[0-9A-F]{6}$")
 
     def test_a_4_3_deck_keeps_its_ratio(self):
         src = self.tmp / "old43.pptx"

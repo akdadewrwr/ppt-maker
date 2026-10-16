@@ -249,7 +249,7 @@ def theme(prs):
     colors = {}
     for el in root.iter(f"{A}clrScheme"):
         for c in el:
-            v = c[0].get("val") or c[0].get("lastClr") if len(c) else None
+            v = (c[0].get("lastClr") or c[0].get("val")) if len(c) else None  # sysClr: lastClr is the real colour
             colors[c.tag.replace(A, "")] = v
         break
     fonts = {}

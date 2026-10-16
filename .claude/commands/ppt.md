@@ -6,7 +6,7 @@ argument-hint: <deck 名字或主题>
 
 ## 启动
 1. 名字取参数（去掉 `/\:*?"<>|`）；参数为空就问用户。下面命令里的 `python` 不存在时用 `python3`；路径一律加引号。
-2. `decks/<名字>/deck.html` 不存在：复制 `ppt/template.html` 过去，按参数主题（及对话中已有信息）写 3–6 页初稿，严格遵守"格式规则"。
+2. `decks/<名字>/deck.html` 不存在：复制 `ppt/template.html` 过去，按参数主题（及对话中已有信息）写 3–6 页初稿，严格遵守"格式规则"。新 deck 一律从模板开始：不要去别的目录找同名或旧的 deck 复制过来（同名不代表同一份）；用户明确要求沿用旧稿时，才用知识库或"导入"把它带进来。
 3. 后台启动服务（Bash，run_in_background）：`python ppt/server.py "decks/<名字>"`。从输出拿到 URL 发给用户（服务已自动打开浏览器）。
 4. 用 Monitor 挂监听：command `python ppt/server.py --tail "decks/<名字>"`，timeout_ms 1800000，description `ppt 事件 <名字>`。它启动时先输出所有未完成事件，按顺序处理。**监听到期通知一到，立即用同一命令重新挂上。**
 5. 服务进程退出的通知到达时：重新执行第 3 步，把新 URL 告诉用户。

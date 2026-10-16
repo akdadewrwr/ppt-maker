@@ -1,23 +1,19 @@
 ## 上一轮完成
-- 知识库已合并到 main（1c5f1a3）。
-- 子项目 5（批量提交 + 导入 HTML）：spec、plan、5 个 task 全部实现，分支 feat/batch-import（到 e0b021f，已推送）。
-- 测试：server 92 OK、selftest 99/99、e2e 163/163。真实会话验收通过（临时项目，验完删除）。
-- opus 最终审查：0 严重、4 重要、9 次要；4 重要 + 6 条提升的次要全部 TDD 修完（4657007）。server 99 OK、selftest 99/99、e2e 166/166。
+- 子项目 5（批量提交 + 导入 HTML）已合并到 main 并推送；分支 feat/batch-import 已删除。
+- 审查发现的 4 条重要、6 条提升的次要都已修复；延后的两条小问题（M7 存储写不进时导入回执反复弹出、M13 清单逐键重写）也已修复。
+- main 上测试：server 99 OK、selftest 99/99、e2e 169/169。
 
 ## 关键结论
-- 待发清单：Enter 立刻发送，Ctrl+Enter 或"加入清单"放进清单，清单非空时 Enter 也加入清单；页面上有编号标记；侧栏可改、可删、可定位，有总体说明；一次发送成 intent kind:batch；state 把 batch 展开成 e#-i。
-- 导入：.html / .htm / .zip / 网址；importer.py 安全解压并判断类型（ppt-maker / slides / page）；/imports 加 CSP sandbox；回执在页面弹出一次，附"打开原稿"链接；新增 --import 命令。
-- Ruling：
-  - batch() 改为函数声明（原写法会触发 TDZ）；
-  - 没有声明编码的原稿按 utf-8 提供（否则中文乱码）；
-  - 弹出层放在提示框之上（回执提示框挡住了导入对话框）；
-  - 另有几处 e2e 测试的修正。
+- 清单面板里打字时，内容先放在内存里，停顿 400ms 后才写入存储；离开页面（pagehide）时立即写入。
+- 已经弹过的导入回执，在内存里也记一份，存储写不进时也只弹一次。
+- editor.js 里，启动时就会读到的变量必须用函数声明或 var（已经踩过两次 TDZ）。
+- 已知小问题（来自知识库）：index 里非对象条目返回 500、PUT 会重置连接、kb 回执只显示在终端等。
 
 ## 改动文件
-- ppt/importer.py（新）、ppt/batch-panel.js（新）、server.py、editor.js、toolbar.js、editor.css、test_server.py、tests/e2e.mjs、ppt.md；spec 与 plan
+- ppt/editor.js、tests/e2e.mjs（本轮）
 
 ## 当前 blocker
-- 等用户决定是否把 feat/batch-import 合并到 main。
+- 无
 
 ## 下一步
-- 合并（git push . feat/batch-import:main，在 main 上跑全部测试）；延后：M7 回执重复弹、M13 清单逐键重写；之后 UI 改进、导出 pptx。
+- 等用户定下一步：UI 改进（用户说过以后再做），或者导出 pptx。

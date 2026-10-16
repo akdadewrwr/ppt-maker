@@ -49,6 +49,7 @@ INJECT = ('<link rel="stylesheet" href="/_ppt/editor.css" data-ppt>'
           '<script src="/_ppt/sketch.js" data-ppt></script>'
           '<script src="/_ppt/kb-panel.js" data-ppt></script>'
           '<script src="/_ppt/batch-panel.js" data-ppt></script>'
+          '<script src="/_ppt/export.js" data-ppt></script>'
           '<script src="/_ppt/toolbar.js" data-ppt></script>'
           '<script src="/_ppt/editor.js" data-ppt></script>')
 ICONS_JS = '<script src="/_ppt/icons.js" data-ppt></script>'

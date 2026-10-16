@@ -54,6 +54,7 @@
     btn(top, '+草图页', '插入空白页并画草图', () => cb.addSketchSlide());
     btn(top, '📚 知识库', '打开知识库', () => cb.kb());
     const importBtn = btn(top, '导入', '导入以前做过的 HTML', () => openImport(importBtn));
+    const exportBtn = btn(top, '导出 PPT', '导出成可在 PowerPoint 里编辑的 .pptx', () => cb.exportPptx());
     const batchBtn = btn(top, '📝 清单', '打开待发清单', () => cb.batch()); batchBtn.hidden = true;
     sep(top);
     btn(top, '+页', '在当前页之后插入空白页', () => cb.addSlide());
@@ -226,6 +227,7 @@
       reposition();
     }
     return {
+      setExporting(on) { exportBtn.disabled = on; exportBtn.textContent = on ? '导出中…' : '导出 PPT'; },
       select, reposition,
       setHistory(h) {
         undo.disabled = !h?.canUndo; redo.disabled = !h?.canRedo;

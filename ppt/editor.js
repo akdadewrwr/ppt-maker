@@ -64,6 +64,7 @@
     kb: () => { batchPanel.toggle(false); kbPanel.toggle(); },
     batch: () => { kbPanel.toggle(false); batchPanel.toggle(); },
     importFile, importUrl, importMode,
+    exportPptx: () => exportPptx(),
     inkColor(c) {
       if (!c || !isObj(selected)) return;
       rememberColor(c);
@@ -522,6 +523,20 @@
       toast('已提交导入，等 Claude 转换');
     } catch (e) { toast(`没有导入：${e.message}`); }
   }
+  let exporting = false;
+  async function exportPptx() { // measured here, built by the server; the file downloads and a report pops up
+    if (exporting) return;
+    exporting = true; tb.setExporting(true); select(null); closePop();
+    try {
+      const data = await PPTExport.measure(slides());
+      const r = await fetch(api('/api/export'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || String(r.status));
+      const a = el('a', null, ui); a.href = d.url; a.download = ''; a.click(); a.remove();
+      toast(d.summary, null, d.url, '下载');
+    } catch (e) { toast(`没有导出：${e.message}`); }
+    finally { exporting = false; tb.setExporting(false); }
+  }
   function importFile(f, mode) {
     if (!/\.(html?|zip)$/i.test(f.name)) return toast('只能导入 .html、.htm 或 .zip');
     if (f.size > 50 * 1024 * 1024) return toast('文件超过 50MB');
@@ -701,11 +716,11 @@
     } catch { replayPending = true; offline = true; render(); } // next good poll reloads and replays
     finally { saving = false; }
   }
-  function toast(msg, text, href) {
+  function toast(msg, text, href, label = '打开原稿') {
     const t = el('div', 'ppt-toast', ui);
     const x = el('button', 'x', t, '×'); x.onclick = () => t.remove();
     el('p', null, t, msg);
-    if (href) { const a = el('a', null, t, '打开原稿'); a.href = href; a.target = '_blank'; a.rel = 'noopener'; } // the server sends it url-safe
+    if (href) { const a = el('a', null, t, label); a.href = href; a.target = '_blank'; a.rel = 'noopener'; } // the server sends it url-safe
     if (text != null) { const ta = el('textarea', null, t); ta.value = text; ta.readOnly = true; }
   }
   function applyPending() { // after a conflict or outage: re-run unsaved ops on the fresh file

@@ -722,6 +722,48 @@ try {
   await sleep(3500);
   check('I2 with storage full the reply still pops up only once', (await ev(`[...document.querySelectorAll('.ppt-toast')].filter((t) => t.textContent.includes('导入了 2 页')).length`)) === 1);
   await ev(`Storage.prototype.setItem = window.__realSet1`);
+  // ---- 6: export pptx ----
+  const exportDeck = deckHtml().replace(/<\/body>/, `<section class="slide" id="s-export">
+  <div class="block" id="b-ex-title" style="grid-area:1/2/3/16"><h2 style="margin:0;font-size:44px;color:#123456">导出测试标题</h2></div>
+  <div class="block" id="b-ex-box" style="grid-area:3/2/6/8;background:#fde68a;border-radius:12px"><p style="margin:0;font-size:24px">框里的字</p><ul style="margin:0"><li>第一条</li><li>第二条</li></ul></div>
+  <div class="block" id="b-ex-svg" style="grid-area:3/9/6/12"><svg viewBox="0 0 10 10" width="200" height="200"><circle cx="5" cy="5" r="4" fill="#38bdf8"/></svg></div>
+  <div class="block" id="b-ex-table" style="grid-area:6/2/9/10"><table><tr><td>指标</td><td>数值</td></tr><tr><td>用户</td><td>820 万</td></tr></table></div>
+  <div class="block" id="b-ex-ext" style="grid-area:6/11/9/14"><img src="https://invalid.example/x.png" alt="" style="width:100px;height:100px"></div>
+  <div class="obj" id="o-ex-shape" data-kind="shape" data-shape="ellipse" style="left:1000px;top:80px;width:200px;height:100px;fill:#38bdf8;stroke:#ffffff;stroke-width:2"><svg viewBox="0 0 200 100"><ellipse cx="100" cy="50" rx="99" ry="49"/></svg><div class="obj-text">圆</div></div>
+  <div class="obj" id="o-ex-arrow" data-kind="arrow" data-shape="arrow" style="left:900px;top:600px;width:300px;height:40px;stroke:#ff0000;stroke-width:3"><svg viewBox="0 0 300 40"><line x1="8" y1="20" x2="292" y2="20"/><polyline points="280,12 292,20 280,28" fill="none"/></svg></div>
+</section></body>`);
+  fs.writeFileSync(path.join(DECK, 'deck.html'), exportDeck); await open(url); await sleep(1500);
+  const m1 = await ev(`PPTExport.measure([document.getElementById('s-export')]).then((d) => JSON.stringify(d))`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 900, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+  const m2 = await ev(`PPTExport.measure([document.getElementById('s-export')]).then((d) => JSON.stringify(d))`);
+  await send('Emulation.clearDeviceMetricsOverride'); await sleep(600);
+  const xt1 = JSON.parse(m1).slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0].t === '导出测试标题');
+  const xt2 = JSON.parse(m2).slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0].t === '导出测试标题');
+  check('X measuring gives canvas pixels at any zoom', xt1 && xt2 && Math.abs(xt1.x - xt2.x) < 1 && Math.abs(xt1.y - xt2.y) < 1 && xt1.x >= 80 && xt1.x < 100, JSON.stringify([xt1?.x, xt2?.x])); // the block's padding puts the text a little right of the grid line
+  const ms = JSON.parse(m1);
+  const kinds = ms.slides[0].items.map((i) => i.k);
+  check('X the measure has native text, box, table, shape, line and a raster for the svg',
+    ['text', 'box', 'table', 'shape', 'line', 'raster'].every((k) => kinds.includes(k)) && ms.slides[0].items.find((i) => i.k === 'raster').id === 'b-ex-svg'
+    && ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].bullet === '•'), kinds.join() + ' ' + JSON.stringify(ms.skipped));
+  check('X an image that cannot be fetched is skipped, not fatal', ms.skipped.some((s) => s.id === 'b-ex-ext'), JSON.stringify(ms.skipped));
+  b9 = await byTitle('导出成可在 PowerPoint'); await click(b9.x, b9.y); await sleep(500);
+  check('X the button shows it is busy', (await ev(`[...document.querySelectorAll('#ppt-ui [title^="导出成可在"]')].map((b) => b.textContent).join()`)) === '导出中…');
+  let exported = null;
+  for (let i = 0; i < 60 && !exported; i++) { await sleep(500); const d = path.join(DECK, 'export'); exported = fs.existsSync(d) && fs.readdirSync(d).find((f) => f.endsWith('.pptx')); }
+  await sleep(500);
+  check('X a pptx is written under export/', !!exported, String(exported));
+  check('X the report pops up with a download link', ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导出完成')
+    && (await ev(`[...document.querySelectorAll('.ppt-toast a')].some((a) => a.textContent === '下载' && a.getAttribute('href').startsWith('/export/'))`)));
+  if (exported) {
+    const back = JSON.parse(execFileSync('python', ['-c', `import json,sys
+from pptx import Presentation
+p = Presentation(sys.argv[1])
+print(json.dumps({"n": len(p.slides), "texts": [sh.text_frame.text for s in p.slides for sh in s.shapes if sh.has_text_frame],
+  "pics": sum(sh.shape_type == 13 for s in p.slides for sh in s.shapes), "tables": sum(sh.has_table for s in p.slides for sh in s.shapes)}, ensure_ascii=False))`,
+      path.join(DECK, 'export', exported)], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }));
+    check('X read back: one slide per page, title text editable, svg as a picture, a table',
+      back.n === (await ev(`document.querySelectorAll('section.slide').length`)) && back.texts.includes('导出测试标题') && back.pics >= 1 && back.tables === 1, JSON.stringify(back).slice(0, 300));
+  }
   // ---- add new checks above ----
   check('no page JS errors', errors.length === 0, errors.join(' | '));
 } catch (err) {

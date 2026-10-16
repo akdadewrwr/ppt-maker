@@ -185,17 +185,26 @@ def pptx_extract(path, out_dir):
 
     def walk(shapes, ax, ay, bx, by, items):  # (ax, ay, bx, by): child EMU -> page EMU for nested groups
         for sh in shapes:
+            try:
+                one(sh, ax, ay, bx, by, items)
+            except Exception:  # noqa: BLE001 — real-world files hold shapes python-pptx can't read; note them and go on
+                items.append({"name": getattr(sh, "name", ""), "kind": "unsupported", "type": type(sh).__name__})
+
+    def one(sh, ax, ay, bx, by, items):
             x0, y0 = sh.left or 0, sh.top or 0
             g = {"name": sh.name, "x": round((ax + bx * x0) * k, 1), "y": round((ay + by * y0) * k, 1),
                  "w": round(bx * (sh.width or 0) * k, 1), "h": round(by * (sh.height or 0) * k, 1), "rotation": round(getattr(sh, "rotation", 0) or 0, 1)}
             st = sh.shape_type
             if st == MSO_SHAPE_TYPE.GROUP:
                 xf = sh._element.grpSpPr.find(qn("a:xfrm"))
-                off, ext, choff, chext = (xf.find(qn(t)) for t in ("a:off", "a:ext", "a:chOff", "a:chExt"))
+                if xf is None or xf.find(qn("a:off")) is None or xf.find(qn("a:ext")) is None:
+                    return walk(sh.shapes, ax, ay, bx, by, items)  # no transform: children are already in page units
+                off, ext = xf.find(qn("a:off")), xf.find(qn("a:ext"))
+                choff = xf.find(qn("a:chOff")) if xf.find(qn("a:chOff")) is not None else off  # both optional: identity
+                chext = xf.find(qn("a:chExt")) if xf.find(qn("a:chExt")) is not None else ext
                 sx = int(ext.get("cx")) / max(1, int(chext.get("cx")))
                 sy = int(ext.get("cy")) / max(1, int(chext.get("cy")))
-                walk(sh.shapes, ax + bx * (int(off.get("x")) - int(choff.get("x")) * sx), ay + by * (int(off.get("y")) - int(choff.get("y")) * sy), bx * sx, by * sy, items)
-                continue
+                return walk(sh.shapes, ax + bx * (int(off.get("x")) - int(choff.get("x")) * sx), ay + by * (int(off.get("y")) - int(choff.get("y")) * sy), bx * sx, by * sy, items)
             if hasattr(sh, "image"):
                 try:
                     img = sh.image
@@ -206,7 +215,7 @@ def pptx_extract(path, out_dir):
                     name = f"img-{n_pic[0]}.{img.ext}"
                     (media / name).write_bytes(img.blob)
                     items.append({**g, "kind": "picture", "file": f"media/{name}"})
-                    continue
+                    return
             if getattr(sh, "has_table", False) and sh.has_table:
                 items.append({**g, "kind": "table", "cells": [[c.text for c in r.cells] for r in sh.table.rows]})
             elif getattr(sh, "has_chart", False) and sh.has_chart:

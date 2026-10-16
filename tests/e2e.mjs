@@ -80,6 +80,8 @@ const key = (k, code, vk, modifiers = 0) => send('Input.dispatchKeyEvent', { typ
   .then(() => send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers }));
 const kZoom = () => ev(`document.querySelector('section.slide').getBoundingClientRect().width / 1280`);
 await send('Runtime.enable'); await send('Page.enable');
+const DL = path.join(SCRATCH, 'downloads'); fs.mkdirSync(DL);
+await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: DL });
 async function open(u) { await send('Page.navigate', { url: u }); await sleep(1800); }
 
 try {
@@ -731,6 +733,12 @@ try {
   <div class="block" id="b-ex-ext" style="grid-area:6/11/9/14"><img src="https://invalid.example/x.png" alt="" style="width:100px;height:100px"></div>
   <div class="obj" id="o-ex-shape" data-kind="shape" data-shape="ellipse" style="left:1000px;top:80px;width:200px;height:100px;fill:#38bdf8;stroke:#ffffff;stroke-width:2"><svg viewBox="0 0 200 100"><ellipse cx="100" cy="50" rx="99" ry="49"/></svg><div class="obj-text">圆</div></div>
   <div class="obj" id="o-ex-arrow" data-kind="arrow" data-shape="arrow" style="left:900px;top:600px;width:300px;height:40px;stroke:#ff0000;stroke-width:3"><svg viewBox="0 0 300 40"><line x1="8" y1="20" x2="292" y2="20"/><polyline points="280,12 292,20 280,28" fill="none"/></svg></div>
+  <div class="block" id="b-ex-long" style="grid-area:6/14/9/17;padding:20px;font-size:20px">这一段文字很长很长，在窄窄的块里一定会折成好几行才能放下</div>
+  <div class="block" id="b-ex-plain" style="grid-area:1/12/3/14"><ul style="margin:0;list-style:none;font-size:18px"><li>无符号</li></ul></div>
+  <div class="block" id="b-ex-font" style="grid-area:9/2/10/8;font-family:Inter,'PingFang SC',sans-serif;font-size:18px">Inter 加中文</div>
+</section>
+<section class="slide" id="s-export-bg" style="background:linear-gradient(90deg,#ffffff,#eeeeee)">
+  <div class="block" id="b-bg-svg" style="grid-area:3/3/6/6"><svg viewBox="0 0 10 10" width="200" height="200"><circle cx="5" cy="5" r="5" fill="#ff0000"/></svg></div>
 </section></body>`);
   fs.writeFileSync(path.join(DECK, 'deck.html'), exportDeck); await open(url); await sleep(1500);
   const m1 = await ev(`PPTExport.measure([document.getElementById('s-export')]).then((d) => JSON.stringify(d))`);
@@ -741,6 +749,21 @@ try {
   const xt2 = JSON.parse(m2).slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0].t === '导出测试标题');
   check('X measuring gives canvas pixels at any zoom', xt1 && xt2 && Math.abs(xt1.x - xt2.x) < 1 && Math.abs(xt1.y - xt2.y) < 1 && xt1.x >= 80 && xt1.x < 100, JSON.stringify([xt1?.x, xt2?.x])); // the block's padding puts the text a little right of the grid line
   const ms = JSON.parse(m1);
+  const lg = (m) => JSON.parse(m).slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0]?.t.startsWith('这一段'));
+  check('X a padded, wrapping paragraph measures the same at any zoom and keeps wrapping', lg(m1) && lg(m2) && Math.abs(lg(m1).x - lg(m2).x) < 1 && lg(m1).wrap === true && lg(m2).wrap === true
+    && Math.abs(lg(m1).x - (13 * 80 + 20)) < 2, JSON.stringify([lg(m1)?.x, lg(m2)?.x, lg(m1)?.wrap, lg(m2)?.wrap]));
+  const plain = ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0]?.t === '无符号');
+  check('X a list without markers gets no bullet and no indent shift', plain && plain.paras[0].bullet === '' && Math.abs(plain.x - (11 * 80 + 8 + 40)) < 2, JSON.stringify([plain?.paras[0].bullet, plain?.x]));
+  const fontRun = ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0]?.t === 'Inter 加中文')?.paras[0].runs[0];
+  check('X Chinese text gets a CJK font of its own', fontRun?.font === 'Inter' && fontRun?.ea === 'PingFang SC'
+    && ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0]?.t === '导出测试标题').paras[0].runs[0].ea === 'Microsoft YaHei', JSON.stringify(fontRun));
+  const redInBg = await ev(`PPTExport.measure([document.getElementById('s-export-bg')]).then((d) => new Promise((ok) => {
+    const bg = d.slides[0].items.find((i) => i.k === 'raster' && i.why === '页面背景'), im = new Image();
+    if (!bg) return ok('no bg raster');
+    im.onload = () => { const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; const g = c.getContext('2d'); g.drawImage(im, 0, 0);
+      const p = g.getImageData(Math.round(im.width * 280 / 1280), Math.round(im.height * 260 / 720), 1, 1).data; ok(p[0] > 200 && p[1] < 80 ? 'red' : 'clean'); };
+    im.src = bg.src; }))`);
+  check('X the page-background picture does not contain the foreground pictures', redInBg === 'clean', redInBg);
   const kinds = ms.slides[0].items.map((i) => i.k);
   check('X the measure has native text, box, table, shape, line and a raster for the svg',
     ['text', 'box', 'table', 'shape', 'line', 'raster'].every((k) => kinds.includes(k)) && ms.slides[0].items.find((i) => i.k === 'raster').id === 'b-ex-svg'
@@ -753,12 +776,17 @@ try {
     return (u.getBoundingClientRect().left - s.getBoundingClientRect().left) / k + parseFloat(getComputedStyle(u).paddingLeft); })()`);
   check('X list text lands where the page puts it (the bullet indent is taken out of the box)', xlist && Math.abs(xlist.x + 24 - ulLeft) < 2, JSON.stringify([xlist?.x, ulLeft]));
   check('X an image that cannot be fetched is skipped, not fatal', ms.skipped.some((s) => s.id === 'b-ex-ext'), JSON.stringify(ms.skipped));
+  { const lr = await rectOf('#b-ex-long'); await dblclick(lr.l + 30, lr.t + 30); await sleep(300); }
+  const editingBefore = await ev(`!!document.querySelector('[contenteditable="true"]')`);
   b9 = await byTitle('导出成可在 PowerPoint'); await click(b9.x, b9.y); await sleep(500);
+  check('X export leaves edit mode first', editingBefore && !(await ev(`!!document.querySelector('[contenteditable="true"]')`)), String(editingBefore));
   check('X the button shows it is busy', (await ev(`[...document.querySelectorAll('#ppt-ui [title^="导出成可在"]')].map((b) => b.textContent).join()`)) === '导出中…');
   let exported = null;
   for (let i = 0; i < 60 && !exported; i++) { await sleep(500); const d = path.join(DECK, 'export'); exported = fs.existsSync(d) && fs.readdirSync(d).find((f) => f.endsWith('.pptx')); }
   await sleep(500);
   check('X a pptx is written under export/', !!exported, String(exported));
+  for (let i = 0; i < 20 && !fs.readdirSync(DL).some((f) => f.endsWith('.pptx')); i++) await sleep(250);
+  check('X the button downloads the file (into the test folder)', fs.readdirSync(DL).some((f) => f.endsWith('.pptx')), fs.readdirSync(DL).join());
   check('X the report pops up with a download link', ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导出完成')
     && (await ev(`[...document.querySelectorAll('.ppt-toast a')].some((a) => a.textContent === '下载' && a.getAttribute('href').startsWith('/export/'))`)));
   if (exported) {
@@ -771,6 +799,12 @@ print(json.dumps({"n": len(p.slides), "texts": [sh.text_frame.text for s in p.sl
     check('X read back: one slide per page, title text editable, svg as a picture, a table',
       back.n === (await ev(`document.querySelectorAll('section.slide').length`)) && back.texts.includes('导出测试标题') && back.pics >= 1 && back.tables === 1, JSON.stringify(back).slice(0, 300));
   }
+  { const before = fs.readdirSync(DL).length; fs.rmSync(path.join(DECK, '.ppt', 'export.json'), { force: true });
+    await send('Page.navigate', { url: url + '&export=1' }); // the deck holds a picture that never loads: the export must not wait for it
+    const te = Date.now(); for (let i = 0; i < 240 && !fs.existsSync(path.join(DECK, '.ppt', 'export.json')); i++) await sleep(500);
+    const took = Date.now() - te; await sleep(1000);
+    check('X a terminal-driven export (export=1) writes the file within 20 s (a picture that never loads is skipped) and downloads nothing', took < 20000 && fs.existsSync(path.join(DECK, '.ppt', 'export.json')) && fs.readdirSync(DL).length === before, JSON.stringify([before, fs.readdirSync(DL), fs.existsSync(path.join(DECK, '.ppt', 'export.json')), took]));
+    await open(url); await sleep(800); }
   const pptxPath = path.join(SCRATCH, '旧稿.pptx');
   execFileSync('python', ['-c', `import sys
 from pptx import Presentation

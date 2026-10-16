@@ -450,7 +450,7 @@ class Handler(BaseHTTPRequestHandler):
             drain(self.rfile, self.stream_len)
         self.stream_len = 0
 
-    def export_post(self):
+    def export_post(self):  # every outcome lands in .ppt/export.json too: server.py --export reads it
         deck = self.server.deck
         if self.stream_len > MAX_EXPORT:
             self.discard_stream()
@@ -465,14 +465,13 @@ class Handler(BaseHTTPRequestHandler):
             out.parent.mkdir(exist_ok=True)
             rep = exporter.build(data, out)  # outside LOCK: can take seconds
             res = {"file": str(out.resolve()), "url": "/export/" + quote(out.name), "summary": exporter.summary(rep), "report": rep}
-            (runtime(deck) / "export.json").write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
-            return self.send(200, res)
+            return self.send(200, export_result(deck, res))
         except exporter.Missing as e:
-            return self.send(503, {"error": str(e)})
+            return self.send(503, export_result(deck, {"error": str(e)}))
         except (ValueError, KeyError, TypeError) as e:
-            return self.send(400, {"error": f"导出失败：{e}"})
+            return self.send(400, export_result(deck, {"error": f"导出失败：{e}"}))
         except OSError as e:
-            return self.send(503, {"error": f"导出时写不进磁盘：{e}"})
+            return self.send(503, export_result(deck, {"error": f"导出时写不进磁盘：{e}"}))
 
     def import_post(self, url):
         deck, q = self.server.deck, parse_qs(url.query)
@@ -506,6 +505,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": str(e)})
         except OSError as e:
             return self.send(503, {"error": f"导入时写不进磁盘：{e}"})
+        except Exception as e:  # noqa: BLE001 — the import dir is already cleaned up by importer
+            pptx = q.get("name", [""])[0].lower().endswith(".pptx")
+            return self.send(400, {"error": "无法读取这个 pptx" if pptx else f"导入失败：{e}"})
 
     def kb_post(self, url):
         deck, q = self.server.deck, parse_qs(url.query)
@@ -795,16 +797,27 @@ def export_cli(deck, port):
         for _ in range(480):
             if res_file.exists():
                 res = json.loads(res_file.read_text(encoding="utf-8"))
+                if "error" in res:
+                    raise SystemExit(f"导出失败：{res['error']}")
                 print(res["file"], flush=True)
                 return print(res["summary"], flush=True)
             if p.poll() is not None:
-                break
+                raise SystemExit("浏览器提前退出了，导出没有完成；在浏览器里点\"导出 PPT\"看看提示")
             time.sleep(0.25)
         raise SystemExit("导出没有完成（120 秒内没有结果）；在浏览器里点\"导出 PPT\"看看提示")
     finally:
         p.kill()
         p.wait(10)
         shutil.rmtree(prof, ignore_errors=True)
+
+
+def export_result(deck, res):
+    """.ppt/export.json, written whole (tmp + replace) so the terminal export never reads half a file."""
+    f = runtime(deck) / "export.json"
+    tmp = f.with_name(f.name + ".part")
+    tmp.write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, f)
+    return res
 
 
 def idle_exit(srv, idle):

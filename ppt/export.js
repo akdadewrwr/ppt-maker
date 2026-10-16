@@ -24,10 +24,12 @@ window.PPTExport = (() => {
     return '';
   }
   const ALIGN = { left: 'l', start: 'l', center: 'c', right: 'r', end: 'r', justify: 'j' };
+  const CJK = /YaHei|JhengHei|PingFang|Hiragino|Noto (Sans|Serif) (CJK|SC|TC|JP|KR)|Source Han|SimSun|SimHei|NSimSun|KaiTi|FangSong|DengXian|STHeiti|STSong|Heiti|Songti|Meiryo|MS Gothic|MS Mincho|Yu Gothic|Malgun|[\u4e00-\u9fff]/i;
   function run(text, cs) {
     const c = col(cs.color) || { hex: '000000', a: 1 };
     const deco = cs.textDecorationLine || '';
-    return { t: text, font: cs.fontFamily.split(',')[0].replace(/["']/g, '').trim(), size: parseFloat(cs.fontSize), color: c.hex, a: c.a,
+    const fonts = cs.fontFamily.split(',').map((f) => f.replace(/["']/g, '').trim()).filter(Boolean);
+    return { t: text, font: fonts[0], ea: fonts.find((f) => CJK.test(f)) || 'Microsoft YaHei', size: parseFloat(cs.fontSize), color: c.hex, a: c.a,
       b: parseInt(cs.fontWeight, 10) >= 600, i: cs.fontStyle === 'italic', u: deco.includes('underline'), s: deco.includes('line-through') };
   }
   function para(root, extra = {}) { // the inline text of root (child blocks are walked separately)
@@ -64,7 +66,7 @@ window.PPTExport = (() => {
   }
   async function dataUrl(src) {
     if (src.startsWith('data:image/')) return src;
-    const b = await (await fetch(src)).blob();
+    const b = await (await fetch(src, { signal: AbortSignal.timeout(5000) })).blob(); // a slow external picture is skipped, not waited on
     if (!b.type.startsWith('image/')) throw new Error('不是图片');
     return new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
   }
@@ -76,15 +78,16 @@ window.PPTExport = (() => {
     const scs = getComputedStyle(slide), sbg = col(scs.backgroundColor);
     // The text box spans el's content width (PowerPoint's wider font metrics then wrap where the page does, and centring
     // stays centred); one line of text never wraps. whole: a list's text sits in its <li>s, so the list's box is the height.
-    const textItem = (el, paras, whole = false) => {
-      const r = whole ? el.getBoundingClientRect() : textRect(el);
+    // list: 'bullets' | 'plain' | false. Computed padding and line-height are canvas px, rects are zoomed: scale by k.
+    const textItem = (el, paras, list = false) => {
+      const r = list ? el.getBoundingClientRect() : textRect(el);
       if (!r || !paras.some((p) => p.runs.length)) return;
       const cs = getComputedStyle(el), b = el.getBoundingClientRect(), n = (v) => parseFloat(v) || 0;
-      let left = b.left + n(cs.borderLeftWidth) + n(cs.paddingLeft);
-      const right = b.right - n(cs.borderRightWidth) - n(cs.paddingRight);
-      if (whole) left -= 24 * (sr.width / W); // the pptx bullet indent (marL 24px): list text then starts where the page's does
+      let left = b.left + (n(cs.borderLeftWidth) + n(cs.paddingLeft)) * k;
+      const right = b.right - (n(cs.borderRightWidth) + n(cs.paddingRight)) * k;
+      if (list === 'bullets') left -= 24 * k; // the pptx bullet indent (marL 24px): list text then starts where the page's does
       const lh = parseFloat(cs.lineHeight) || n(cs.fontSize) * 1.3;
-      items.push({ k: 'text', ...rel({ left, top: r.top, width: Math.max(right - left, r.width), height: r.height }), wrap: paras.length > 1 || r.height > lh * 1.5, paras });
+      items.push({ k: 'text', ...rel({ left, top: r.top, width: Math.max(right - left, r.width), height: r.height }), wrap: paras.length > 1 || r.height / k > lh * 1.5, paras });
     };
     const raster = (el, why, pad = 0) => { const g = rel(el.getBoundingClientRect()); const it = { k: 'raster', x: g.x - pad, y: g.y - pad, w: g.w + 2 * pad, h: g.h + 2 * pad, id: idOf(el), why }; items.push(it); rasters.push([el, it]); };
     function obj(el) {
@@ -135,7 +138,8 @@ window.PPTExport = (() => {
       const bg = col(cs.backgroundColor), bw = parseFloat(cs.borderTopWidth) || 0, bc = cs.borderTopStyle !== 'none' && bw ? col(cs.borderTopColor) : null;
       if (bg || bc) items.push({ k: 'box', ...rel(el.getBoundingClientRect()), fill: bg?.hex || null, fa: bg?.a ?? 1, line: bc?.hex || null, lw: bc ? bw : 0, r: parseFloat(cs.borderTopLeftRadius) || 0 });
       if ((el.tagName === 'UL' || el.tagName === 'OL') && [...el.children].every((li) => li.tagName === 'LI' && ![...li.children].some(blockish))) {
-        return textItem(el, [...el.children].map((li, i) => para(li, { bullet: el.tagName === 'UL' ? '•' : `${i + 1}.` })), true);
+        const marked = getComputedStyle(el.children[0] || el).listStyleType !== 'none';
+        return textItem(el, [...el.children].map((li, i) => para(li, { bullet: !marked ? '' : el.tagName === 'UL' ? '•' : `${i + 1}.` })), marked ? 'bullets' : 'plain');
       }
       textItem(el, [para(el)]);
       for (const c of el.children) if (blockish(c) || RASTER_TAGS[c.tagName.toUpperCase()] || c.tagName === 'IMG' || c.classList.contains('obj')) walk(c);
@@ -153,10 +157,11 @@ window.PPTExport = (() => {
   async function render(slide, mode) { // mode t: only the marked rasters, page background clear; b: the page background alone
     const st = document.createElement('style'); st.dataset.ppt = '';
     st.textContent = '[data-ppt-x="t"] *, [data-ppt-x="b"] * { visibility: hidden !important; } [data-ppt-x="t"] { background: transparent !important; }'
-      + '[data-ppt-x="r"], [data-ppt-x="r"] * { visibility: visible !important; }';
+      + '[data-ppt-x="t"] [data-ppt-x="r"], [data-ppt-x="t"] [data-ppt-x="r"] * { visibility: visible !important; }'; // not in the background render
     document.head.append(st); slide.dataset.pptX = mode;
     try { // a picture that can't be fetched (it is reported as skipped) must not sink the whole render
-      return await htmlToImage.toCanvas(slide, { width: W, height: H, pixelRatio: 2, style: { zoom: '1', margin: '0' }, imagePlaceholder: BLANK });
+      return await htmlToImage.toCanvas(slide, { width: W, height: H, pixelRatio: 2, style: { zoom: '1', margin: '0' }, imagePlaceholder: BLANK,
+        filter: (n) => !(n.tagName === 'IMG' && !(n.complete && n.naturalWidth)) }); // pictures still loading would stall the render
     }
     finally { delete slide.dataset.pptX; st.remove(); }
   }

@@ -104,7 +104,7 @@ def build(data, out):
             if r.get("font"):
                 f.name = r["font"]
                 rPr = run._r.get_or_add_rPr()
-                rPr.find(qn("a:latin")).addnext(rPr.makeelement(qn("a:ea"), {"typeface": r["font"]}))
+                rPr.find(qn("a:latin")).addnext(rPr.makeelement(qn("a:ea"), {"typeface": r.get("ea") or r["font"]}))
             if r.get("s"):
                 run._r.get_or_add_rPr().set("strike", "sngStrike")
 
@@ -169,18 +169,18 @@ def build(data, out):
         for i, row in enumerate(it["cells"]):
             for j, cd in enumerate(row):
                 cell = t.cell(i, j)
-                set_fill(cell.fill, cd.get("fill"))
-                cell.margin_left = cell.margin_right = Emu(E(4))
-                cell.margin_top = cell.margin_bottom = Emu(E(2))
-                text_into(cell.text_frame, cd.get("paras"))
-                if it.get("border") and it.get("bw"):
+                if it.get("border") and it.get("bw"):  # schema order: lnL, lnR, lnT, lnB, then the fill (PowerPoint repairs anything else)
                     tcPr = cell._tc.get_or_add_tcPr()
-                    for side in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
+                    for k, side in enumerate(("a:lnL", "a:lnR", "a:lnT", "a:lnB")):
                         ln = tcPr.makeelement(qn(side), {"w": str(E(it["bw"]))})
                         sf = ln.makeelement(qn("a:solidFill"), {})
                         sf.append(sf.makeelement(qn("a:srgbClr"), {"val": str(it["border"])[:6].upper()}))
                         ln.append(sf)
-                        tcPr.insert(0, ln) if side == "a:lnL" else tcPr.append(ln)
+                        tcPr.insert(k, ln)
+                set_fill(cell.fill, cd.get("fill"))
+                cell.margin_left = cell.margin_right = Emu(E(4))
+                cell.margin_top = cell.margin_bottom = Emu(E(2))
+                text_into(cell.text_frame, cd.get("paras"))
         return "table"
 
     add = {"text": add_text, "box": add_box, "shape": add_shape, "line": add_line, "image": add_pic, "raster": add_pic, "table": add_table}
@@ -197,7 +197,7 @@ def build(data, out):
         for it in sd.get("items") or []:
             try:
                 kind = add[it["k"]](s, it)
-            except (KeyError, ValueError, TypeError, IndexError, AttributeError) as e:
+            except Exception as e:  # noqa: BLE001 — one bad item (e.g. PIL's OSError on a non-image) must not sink the deck
                 rep["skipped"].append({"id": it.get("id", ""), "why": f"无法生成：{e}"})
                 continue
             if kind == "raster":

@@ -456,6 +456,31 @@ class ExporterTests(unittest.TestCase):
         a, b = Presentation(str(self.tmp / "w.pptx")).slides[0].shapes
         self.assertEqual((a.text_frame.word_wrap, b.text_frame.word_wrap), (False, True))
 
+    def test_table_border_xml_is_in_schema_order(self):  # review C1: PowerPoint repairs lnL..lnB placed around the fill
+        from pptx import Presentation
+        from pptx.oxml.ns import qn
+        exporter.build(sample_export(), self.tmp / "t.pptx")
+        tbl = [sh for sh in Presentation(str(self.tmp / "t.pptx")).slides[1].shapes if sh.has_table][0].table
+        for cell in (tbl.cell(0, 0), tbl.cell(0, 1)):
+            tags = [c.tag.split("}")[1] for c in cell._tc.tcPr]
+            self.assertEqual(tags[:4], ["lnL", "lnR", "lnT", "lnB"], tags)
+            self.assertIn(tags[4], ("solidFill", "noFill"), tags)
+
+    def test_a_corrupt_image_is_skipped_not_fatal(self):  # review I3: PIL raises OSError for bytes that are not an image
+        bad = "data:image/png;base64," + base64.b64encode(b"<html>CDN error</html>").decode()
+        data = {"slides": [{"id": "s", "bg": None, "items": [{"k": "image", "id": "b-pic", "x": 0, "y": 0, "w": 9, "h": 9, "src": bad, "crop": None},
+                                                            {"k": "text", "x": 0, "y": 20, "w": 90, "h": 20, "paras": [{"runs": [{"t": "还在", "size": 16}]}]}]}]}
+        rep = exporter.build(data, self.tmp / "c.pptx")
+        self.assertEqual((rep["text"], [s["id"] for s in rep["skipped"]]), (1, ["b-pic"]))
+
+    def test_east_asian_font_is_its_own(self):  # review: spec 2.2 — Chinese text gets a CJK face, not the Latin one
+        para = {"runs": [{"t": "中文 abc", "size": 16, "font": "Inter", "ea": "Microsoft YaHei"}]}
+        exporter.build({"slides": [{"id": "s", "bg": None, "items": [{"k": "text", "x": 0, "y": 0, "w": 90, "h": 20, "paras": [para]}]}]}, self.tmp / "f.pptx")
+        from pptx import Presentation
+        xml = Presentation(str(self.tmp / "f.pptx")).slides[0].shapes[0].text_frame.paragraphs[0].runs[0]._r.xml
+        self.assertIn('<a:latin typeface="Inter"', xml)
+        self.assertIn('<a:ea typeface="Microsoft YaHei"', xml)
+
     def test_summary_names_what_became_pictures(self):
         rep = {"slides": 4, "text": 18, "shape": 6, "table": 1, "image": 2, "raster": [{"id": "b-chart", "why": "SVG 插图"}], "skipped": []}
         self.assertEqual(exporter.summary(rep), "导出完成：4 页，18 个文本框、6 个形状、1 个表格、2 张图片；1 处转成了图片（b-chart：SVG 插图）")
@@ -500,6 +525,11 @@ class ExportApiTests(ServerCase):
         self.assertEqual(r.read()[:2], b"PK")
         c.close()
 
+    def test_a_failed_export_says_why_in_export_json(self):  # review I7: the terminal export reads it instead of waiting 120 s
+        with mock.patch.object(exporter, "build", side_effect=exporter.Missing("导出需要 python-pptx：pip install python-pptx")):
+            self.post_raw("/api/export?t=tok", json.dumps(sample_export()).encode())
+        self.assertEqual(json.loads((self.deck / ".ppt" / "export.json").read_text(encoding="utf-8")), {"error": "导出需要 python-pptx：pip install python-pptx"})
+
     def test_export_needs_the_token_and_a_sane_body(self):
         self.assertEqual(self.post_raw("/api/export?t=bad", b"{}")[0], 403)
         self.assertEqual(self.post_raw("/api/export?t=tok", b"not json")[0], 400)
@@ -526,6 +556,22 @@ class ExportApiTests(ServerCase):
 
 @unittest.skipUnless(server.browser(), "needs Edge or Chrome")
 class ExportCliTests(unittest.TestCase):
+    def test_export_from_the_terminal_reports_a_failure_quickly(self):  # review I7
+        proj = Path(tempfile.mkdtemp())
+        deck = proj / "decks" / "坏"
+        self.addCleanup(shutil.rmtree, proj, True)
+        self.addCleanup(subprocess.run, [sys.executable, SERVER_PY, "--stop", str(deck)], capture_output=True, timeout=30)
+        fake = proj / "fake"
+        (fake / "pptx").mkdir(parents=True)
+        (fake / "pptx" / "__init__.py").write_text("raise ImportError('no pptx here')", encoding="utf-8")
+        server.ensure_deck(deck)
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(fake)}  # the detached server inherits it
+        t0 = _time.time()
+        r = subprocess.run([sys.executable, SERVER_PY, "--export", "--port", "8865", str(deck)], capture_output=True, text=True, encoding="utf-8", timeout=200, env=env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("导出需要 python-pptx", r.stdout + r.stderr)
+        self.assertLess(_time.time() - t0, 60)
+
     def test_export_from_the_terminal(self):
         proj = Path(tempfile.mkdtemp())
         deck = proj / "decks" / "导出"
@@ -618,6 +664,41 @@ class PptxImportTests(ServerCase):
         self.assertEqual(self.up(b"PK\x03\x04 not really", "bad.pptx"), (400, {"error": "无法读取这个 pptx"}))
         self.assertEqual(self.up(b"\xd0\xcf\x11\xe0", "old.ppt")[1]["error"], "请先在 PowerPoint 里另存为 .pptx")
         self.assertEqual([p for p in (self.deck / "imports").iterdir()] if (self.deck / "imports").exists() else [], [])
+
+    def test_odd_real_world_shapes_do_not_crash_the_import(self):  # review I4
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE
+        from pptx.oxml.ns import qn
+        from pptx.util import Inches
+        prs = Presentation()
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        grp = s.shapes.add_group_shape()
+        grp.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(1), Inches(1), Inches(1), Inches(1))
+        xf = grp._element.grpSpPr.find(qn("a:xfrm"))
+        for t in ("a:chOff", "a:chExt"):  # optional in the schema
+            xf.remove(xf.find(qn(t)))
+        odd = s.shapes.add_shape(MSO_SHAPE.OVAL, Inches(3), Inches(1), Inches(1), Inches(1))
+        pr = odd._element.spPr
+        pr.remove(pr.find(qn("a:prstGeom")))  # no geometry: python-pptx can't name its type
+        pic = s.shapes.add_picture(io.BytesIO(base64.b64decode(PNG_1PX)), Inches(5), Inches(1), Inches(1), Inches(1))
+        s.part.related_part(pic._element.blipFill.blip.rEmbed)._blob = b"<svg xmlns='http://www.w3.org/2000/svg'/>"  # PIL can't read it
+        src = self.tmp / "odd.pptx"
+        prs.save(str(src))
+        with mock.patch.object(importer, "render_pdf", return_value=None):
+            st, d = self.up(src.read_bytes(), "odd.pptx")
+        self.assertEqual(st, 200, d)
+        items = json.loads(Path(inbox(self.deck)[-1]["source"]).read_text(encoding="utf-8"))["slides"][0]["items"]
+        self.assertEqual(len(items), 3, items)
+        rect = [i for i in items if i.get("shape") == "RECTANGLE"][0]
+        self.assertEqual((round(rect["x"]), round(rect["y"])), (128, 128))  # default 10in-wide page: 1in = 128px
+
+    def test_any_unexpected_import_error_is_a_clean_400(self):  # review I4: never a dropped connection
+        src = self.tmp / "old.pptx"
+        make_pptx(src)
+        with mock.patch.object(importer, "pptx_extract", side_effect=RuntimeError("boom")):
+            st, d = self.up(src.read_bytes(), "x.pptx")
+        self.assertEqual((st, d["error"]), (400, "无法读取这个 pptx"))
+        self.assertEqual(list((self.deck / "imports").iterdir()), [])
 
     def test_no_python_pptx_gives_503(self):
         src = self.tmp / "old.pptx"

@@ -290,7 +290,10 @@
   }
   setInterval(poll, 1000);
   poll();
-  if (new URLSearchParams(location.search).get('export') === '1') document.fonts.ready.then(() => setTimeout(exportPptx, 800)); // server.py --export
+  if (new URLSearchParams(location.search).get('export') === '1') { // server.py --export
+    // fonts.ready waits for the whole page load, which a slow external picture can hold up for good: cap the wait
+    Promise.race([document.fonts.ready, new Promise((ok) => setTimeout(ok, 3000))]).then(() => setTimeout(() => exportPptx(true), 800));
+  }
 
   // ---- rendering: status pill + per-intent marks and reply bubbles ----
   function render() {
@@ -525,7 +528,7 @@
     } catch (e) { toast(`没有导入：${e.message}`); }
   }
   let exporting = false;
-  async function exportPptx() { // measured here, built by the server; the file downloads and a report pops up
+  async function exportPptx(auto = false) { // measured here, built by the server; the file downloads and a report pops up
     if (exporting) return;
     exporting = true; tb.setExporting(true); select(null); closePop();
     try {
@@ -533,7 +536,7 @@
       const r = await fetch(api('/api/export'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || String(r.status));
-      const a = el('a', null, ui); a.href = d.url; a.download = ''; a.click(); a.remove();
+      if (!auto) { const a = el('a', null, ui); a.href = d.url; a.download = ''; a.click(); a.remove(); } // --export: the file is reported in the terminal
       toast(d.summary, null, d.url, '下载');
     } catch (e) { toast(`没有导出：${e.message}`); }
     finally { exporting = false; tb.setExporting(false); }

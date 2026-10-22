@@ -1,9 +1,11 @@
 ## 上一轮完成
-- 顶栏新增"✓ 清除标记"按钮（标题"清除已完成标记"）：一次关掉所有绿色已完成标记，排队中/处理中的保留。分支 feat/clear-done 已推送。
+- feat/clear-done 已快进合并到 main 并推送，分支本地+远端已删
+- main 上全部测试通过：server 157/157、selftest 99/99、e2e 198/198
 
 ## 关键结论
-- 原因：清单里每条都有绿框，但只有第一条带回执气泡和 ×，其余关不掉。
-- e2e 198/198、selftest 99/99；"导出中改稿"那条检查偶发失败一次，重跑通过（与本改动无关）。
+- 顶栏"✓ 清除标记"一键关掉所有绿色已完成框（含清单各条），排队/处理中保留，存 localStorage ppt-dismissed
+- Codex 接入（子项目 7）已在 main，用户实测无问题
+- 合并流程：在 main 上 `git merge --ff-only <branch>`，跑全测试，push，删分支
 
 ## 改动文件
 - ppt/toolbar.js、ppt/editor.js、tests/e2e.mjs
@@ -12,5 +14,6 @@
 - 无
 
 ## 下一步
-- 等用户确认合并 feat/clear-done → main。
-- 延后次要问题 4 条（见 Codex 子项目）；"导出中改稿"e2e 检查偶发失败，可改为更稳的等待。
+- 等用户新需求
+- 可选：4 个延后 minor（游标损坏回退 0、Claude 入口缺 PDF 提示、每次轮询全量读 inbox/outbox、--install-codex 覆盖无提示）
+- 可选：导出期间改稿那条 e2e 偶发失败，改成更稳的等待

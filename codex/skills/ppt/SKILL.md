@@ -9,6 +9,7 @@ ppt-maker 的程序装在 `{{PPT_HOME}}`（下称 PPT_HOME）。deck 属于当�
 - 共用规则里的 `ppt/…` 指 PPT_HOME 下的文件，例如 `{{PPT_HOME}}/ppt/server.py`，只用来运行命令；`decks/<名字>` 指 DECK。
 - PPT_HOME 里只读 `{{PPT_HOME}}/prompts/ppt-common.md`，别的都不读、不列目录（它的 `decks/` 是开发用的测试稿，与当前项目无关）。
 - 下面命令里的 `python` 不存在时用 `python3`；路径一律加引号。
+- 这些文件都是 UTF-8：读写时指明编码（PowerShell 用 `Get-Content -Encoding UTF8`），否则中文会乱码。
 
 ## 启动
 1. 名字取 `$ppt` 后面的文字（去掉 `/\:*?"<>|`）；为空就问用户。

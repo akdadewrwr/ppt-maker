@@ -510,6 +510,34 @@ class AgentTests(ServerCase):  # which agent is listening, shown on the page and
         self.assertEqual(server.read_agent(self.deck), "Codex")
 
 
+class PromptTests(unittest.TestCase):  # one set of rules for every agent, an entry per agent
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def read(self, rel):
+        return (self.ROOT / rel).read_text(encoding="utf-8")
+
+    def test_common_rules_name_no_claude_tools(self):
+        common = self.read("prompts/ppt-common.md")
+        self.assertIn("## 处理事件", common)
+        for word in ("Monitor", "WebFetch", "run_in_background", "Claude Code", "用 Read"):
+            self.assertNotIn(word, common)
+
+    def test_both_entries_read_the_common_rules(self):
+        claude, codex = self.read(".claude/commands/ppt.md"), self.read("codex/skills/ppt/SKILL.md")
+        self.assertIn("prompts/ppt-common.md", claude)
+        self.assertIn("prompts/ppt-common.md", codex)
+        self.assertTrue(codex.startswith("---\nname: ppt\n"))
+        self.assertIn("\ndescription:", codex.split("---")[1])
+        for s in ("--wait --recent --agent Codex", "--wait --agent Codex", "已停止监听", "windows.sandbox", "unelevated", "{{PPT_HOME}}"):
+            self.assertIn(s, codex)
+
+    def test_claude_entry_keeps_its_loop(self):
+        claude = self.read(".claude/commands/ppt.md")
+        for s in ("--detach", "--tail", "Monitor"):
+            self.assertIn(s, claude)
+        self.assertNotIn("## deck.html 格式规则", claude)  # moved to the common rules
+
+
 PNG_1PX = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")).decode()

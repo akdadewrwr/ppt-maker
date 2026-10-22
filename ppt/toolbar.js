@@ -56,6 +56,7 @@
     const importBtn = btn(top, '导入', '导入以前做过的 HTML 或 PPTX', () => openImport(importBtn));
     const exportBtn = btn(top, '导出 PPT', '导出成可在 PowerPoint 里编辑的 .pptx', () => cb.exportPptx());
     const batchBtn = btn(top, '📝 清单', '打开待发清单', () => cb.batch()); batchBtn.hidden = true;
+    btn(top, '✓ 清除标记', '清除已完成标记', () => cb.clearDone());
     sep(top);
     btn(top, '+页', '在当前页之后插入空白页', () => cb.addSlide());
     const delSlide = btn(top, '−页', '删除当前页', () => cb.removeSlide());

@@ -32,6 +32,7 @@
 
   const ui = el('div', null, document.body); ui.id = 'ppt-ui'; ui.setAttribute('data-ppt', '');
   const marks = el('div', null, ui);
+  var doneMarks = []; // ids of the green marks on screen, for "清除已完成标记"
   let selected = null, savedRange = null;
   const movable = (b) => !!b && b.id && b.classList.contains('block') && b.parentElement?.matches('section.slide');
   const isObj = (n) => !!n && n.classList.contains('obj');
@@ -65,6 +66,7 @@
     batch: () => { kbPanel.toggle(false); batchPanel.toggle(); },
     importFile, importUrl, importMode,
     exportPptx: () => exportPptx(),
+    clearDone: () => { ls.set('ppt-dismissed', [...new Set([...ls.get('ppt-dismissed', []), ...doneMarks])]); render(); }, // queued / processing marks stay
     inkColor(c) {
       if (!c || !isObj(selected)) return;
       rememberColor(c);
@@ -335,10 +337,12 @@
       if (!threads.has(root)) threads.set(root, []);
       threads.get(root).push(e);
     }
+    doneMarks = [];
     for (const [rootId, items] of threads) {
       const root = items[0], slide = document.getElementById(root.slide_id || '');
       if (root.type !== 'intent' || !root.rect || !slide || dismissed.has(rootId)) continue;
       const last = items[items.length - 1], sr = slide.getBoundingClientRect(), cr = G.slideToClient(sr, root.rect);
+      if (last.status === 'done') doneMarks.push(rootId);
       const m = el('div', `ppt-abs ppt-mark ${last.status}`, marks);
       place(m, cr);
       el('b', null, m, `#${rootId} ${{ queued: '排队中', processing: '处理中', done: '已完成' }[last.status]}`);

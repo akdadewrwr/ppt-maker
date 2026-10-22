@@ -662,6 +662,13 @@ try {
   await ev(`(() => { const b = [...document.querySelectorAll('.ppt-bubble')].find((n) => n.textContent.includes('两处都改好了')); b.querySelector('textarea').id = 'batch-answer'; b.scrollIntoView({block: 'center'}); })()`); await sleep(200);
   const bta = await rectOf('#batch-answer'); await click(bta.x, bta.y); await type('口号再短一点'); await enter(); await sleep(2000);
   check('Q answering a batch refers to the batch', inbox().at(-1)?.type === 'answer' && inbox().at(-1).re === be.id, JSON.stringify(inbox().at(-1)));
+  { // every batch item leaves a green mark but only the first has a bubble with ×: one button clears them all
+    const count = (s) => ev(`document.querySelectorAll('.ppt-mark${s}').length`);
+    const doneBefore = await count('.done'), openBefore = await count(':not(.done):not(.ppt-pending)');
+    const cb = await byTitle('清除已完成标记'); if (cb) { await click(cb.x, cb.y); await sleep(500); }
+    check('Q one button clears every done mark, and only those', doneBefore > 0 && !!cb && (await count('.done')) === 0 && (await count(':not(.done):not(.ppt-pending)')) === openBefore,
+      JSON.stringify([doneBefore, openBefore, await count('.done'), !!cb]));
+  }
   // a deleted slide and a full browser store must not break the list
   await ev(`localStorage.setItem('ppt-batch:' + PPT.token, JSON.stringify({note: '', items: [{slide: 9, slide_id: 's-gone', rect: {x: 0, y: 0, w: 10, h: 10}, cells: '1-1/1-1', blocks: [], text: '旧页'}]}))`);
   await open(url); await sleep(1000);

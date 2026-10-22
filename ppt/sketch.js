@@ -130,7 +130,7 @@
     sep();
     // a note still being typed counts; send gets a getter: strokes drawn while its box is open go along too
     const exit = (fn) => { endNote(true); if (items.length) fn(); else cb.toast('还没有画内容'); };
-    btn('发给 Claude', '把草图发给 Claude', () => exit(() => cb.send(() => items)), 'ppt-ask');
+    btn(`发给 ${PPTAgent.name()}`, `把草图发给 ${PPTAgent.name()}`, () => exit(() => cb.send(() => items)), 'ppt-ask');
     btn('保留为笔迹', '把草图留在幻灯片上', () => exit(() => cb.keep(items)));
     btn('取消', '退出草图（草稿会保留）', () => close(false));
 

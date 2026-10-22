@@ -275,12 +275,27 @@
     } catch { /* offline: poll() will retry */ } finally { flushing = false; render(); }
   }
 
+  // ---- the listening agent's name (Claude or Codex), in every label already built ----
+  function setAgent(n) {
+    const old = PPTAgent.name();
+    if (!n || n === old) return;
+    PPTAgent.n = n;
+    const swap = (s) => s.split(old).join(n);
+    for (const e of ui.querySelectorAll('[title], [placeholder]')) {
+      if (e.title.includes(old)) e.title = swap(e.title);
+      if (e.placeholder?.includes(old)) e.placeholder = swap(e.placeholder);
+    }
+    const w = document.createTreeWalker(ui, NodeFilter.SHOW_TEXT);
+    for (let t; (t = w.nextNode());) if (t.nodeValue.includes(old)) t.nodeValue = swap(t.nodeValue);
+  }
+
   // ---- polling ----
   async function poll() {
     try {
       const r = await fetch(api('/api/state'), { cache: 'no-store' });
       if (!r.ok) throw new Error(String(r.status));
       state = await r.json(); offline = false; online = state.online;
+      setAgent(state.agent);
       announceImports();
       const typing = drag || pop || sketch || [...ui.querySelectorAll('textarea, input[placeholder]')].some((t) => !t.closest('[hidden]') && (t === document.activeElement || (t.value.trim() && !t.closest('.ppt-batch')))) // list items always hold text: only typing in them counts;
       if (!editing && !saving && !typing && !exporting && (state.version !== version || replayPending)) return reload(); // never wipe what the user is typing, nor an export
@@ -299,7 +314,7 @@
   function render() {
     const pending = ls.get('ppt-queue', []).length;
     tb.setStatus(offline ? `服务断开${pending ? ` · ${pending} 条待发送` : ''}`
-      : `${online ? '● Claude 在线' : '○ Claude 离线'}${pending ? ` · ${pending} 条发送中` : ''}`, offline);
+      : `${online ? '●' : '○'} ${PPTAgent.name()} ${online ? '在线' : '离线'}${pending ? ` · ${pending} 条发送中` : ''}`, offline);
     tb.setHistory(offline ? null : state?.history);
     tb.setSlideCount(slides().length);
     if (!state || (document.activeElement && document.activeElement.closest('.ppt-bubble'))) return; // don't wipe a half-typed answer

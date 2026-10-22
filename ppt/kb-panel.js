@@ -48,9 +48,9 @@
       Object.entries(SCOPE_ZH).forEach(([v, l]) => { el('option', null, scope, l).value = v; });
       if (tab === 'skills') {
         const ta = el('textarea', null, add); ta.placeholder = '新建 Skill：描述你要的方法或规范，例如"我们公司的品牌规范：主色……字体……"';
-        btn(add, '让 Claude 写', '让 Claude 写这个 Skill', async () => {
+        btn(add, `让 ${PPTAgent.name()} 写`, `让 ${PPTAgent.name()} 写这个 Skill`, async () => {
           if (!ta.value.trim()) return;
-          try { await call('/api/kb/skill', send('POST', { scope: scope.value, text: ta.value.trim() })); ta.value = ''; cb.toast('已发给 Claude，写好后会出现在列表里'); }
+          try { await call('/api/kb/skill', send('POST', { scope: scope.value, text: ta.value.trim() })); ta.value = ''; cb.toast(`已发给 ${PPTAgent.name()}，写好后会出现在列表里`); }
           catch (e) { cb.toast(`没有发出：${e.message}`); }
         }, 'ppt-ask');
         shown = ''; renderList(); return;
@@ -120,13 +120,13 @@
       if (i.note) el('p', 'ppt-kb-err', row, i.note);
       const acts = el('div', 'ppt-kb-acts', row);
       const key = `${scope}:${i.id}`;
-      if (i.status === 'ready') btn(acts, '卡片', '查看 Claude 写的卡片', async () => {
+      if (i.status === 'ready') btn(acts, '卡片', `查看 ${PPTAgent.name()} 写的卡片`, async () => {
         if (viewing === key) { viewing = null; cardText = null; return refresh(); }
         try { cardText = (await call('/api/kb/card', { query: `&scope=${scope}&id=${i.id}` })).text; viewing = key; } catch (e) { cb.toast(`卡片打不开：${e.message}`); }
         refresh();
       });
-      btn(acts, '用在这一页', '让 Claude 按这份资料改当前页', () => cb.ask([i.id], i.title));
-      btn(acts, '重新消化', '让 Claude 重新读这份资料', () => act('/api/kb/redigest', scope, i.id));
+      btn(acts, '用在这一页', `让 ${PPTAgent.name()} 按这份资料改当前页`, () => cb.ask([i.id], i.title));
+      btn(acts, '重新消化', `让 ${PPTAgent.name()} 重新读这份资料`, () => act('/api/kb/redigest', scope, i.id));
       btn(acts, '删除', '移到知识库的回收站', () => act('/api/kb/remove', scope, i.id));
       if (viewing === key && cardText != null) el('pre', 'ppt-kb-card', row, cardText);
     }

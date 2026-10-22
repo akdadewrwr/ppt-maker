@@ -41,7 +41,7 @@ HISTORY_MAX = 200
 WATCH_SECS = 0.5
 LOCK = threading.Lock()
 INJECT = ('<link rel="stylesheet" href="/_ppt/editor.css" data-ppt>'
-          '<script data-ppt>window.PPT={token:%s,version:%s}</script>'
+          '<script data-ppt>window.PPT={token:%s,version:%s};var PPTAgent={n:"Claude",name(){return this.n}}</script>'
           '<script src="/_ppt/vendor/html-to-image.js" data-ppt></script>'
           '<script src="/_ppt/geom.js" data-ppt></script>'
           '<script src="/_ppt/ops.js" data-ppt></script>'

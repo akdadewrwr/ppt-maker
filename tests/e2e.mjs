@@ -88,6 +88,16 @@ try {
   // 1. offline status, fit to narrow width
   await open(url);
   check('1 status shows Claude offline', (await statusText()).includes('离线'), await statusText());
+  { // the page names whichever agent is listening (Codex writes .ppt/agent through --wait --agent Codex)
+    const rt = path.join(DECK, '.ppt'), hasTitle = (t) => ev(`[...document.querySelectorAll('#ppt-ui [title]')].some((n) => n.title === ${JSON.stringify(t)})`);
+    fs.writeFileSync(path.join(rt, 'agent'), 'Codex'); fs.writeFileSync(path.join(rt, 'heartbeat'), 'x');
+    for (let i = 0; i < 20 && !(await statusText()).includes('Codex'); i++) await sleep(250);
+    check('A status names the listening agent', (await statusText()).includes('Codex 在线'), await statusText());
+    check('A ask button names the agent', await hasTitle('问 Codex'));
+    fs.rmSync(path.join(rt, 'agent')); fs.rmSync(path.join(rt, 'heartbeat'));
+    for (let i = 0; i < 20 && !(await statusText()).includes('Claude 离线'); i++) await sleep(250);
+    check('A back to Claude when no agent is recorded', (await statusText()).includes('Claude 离线') && await hasTitle('问 Claude'), await statusText());
+  }
   await send('Emulation.setDeviceMetricsOverride', { width: 900, height: 800, deviceScaleFactor: 1, mobile: false });
   await sleep(400);
   const fitInfo = await ev(`({zoom: getComputedStyle(document.documentElement).getPropertyValue('--ppt-zoom'), sw: document.documentElement.scrollWidth, iw: innerWidth})`);

@@ -101,7 +101,7 @@
       const grid = el('div', 'ppt-icon-grid', icons);
       const show = () => {
         grid.textContent = '';
-        if (!window.PPTIcons) { el('p', 'who', grid, '图标库未生成：运行 python tools/build_icons.py（"让 Claude 画"仍可用）'); return; }
+        if (!window.PPTIcons) { el('p', 'who', grid, `图标库未生成：运行 python tools/build_icons.py（"让 ${PPTAgent.name()} 画"仍可用）`); return; }
         for (const n of searchIcons(window.PPTIcons, window.PPTIconsZh || {}, q.value)) {
           const ib = btn(grid, '', n, () => { icons.hidden = true; cb.addIcon(n); }, 'ppt-icon');
           ib.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${window.PPTIcons[n].body}</svg>`;
@@ -109,9 +109,9 @@
       };
       q.addEventListener('input', show); show();
       const r = el('div', 'ppt-row', icons);
-      const d = el('input', null, r); d.placeholder = '没有合适的？描述一下，让 Claude 画';
+      const d = el('input', null, r); d.placeholder = `没有合适的？描述一下，让 ${PPTAgent.name()} 画`;
       const go = () => { if (d.value.trim()) { icons.hidden = true; cb.drawIcon(d.value.trim()); } };
-      btn(r, '让 Claude 画', '让 Claude 画一个图标', go);
+      btn(r, `让 ${PPTAgent.name()} 画`, `让 ${PPTAgent.name()} 画一个图标`, go);
       d.addEventListener('keydown', (k) => { if (k.key === 'Enter') { k.preventDefault(); go(); } });
       const ar = anchor.getBoundingClientRect();
       cb.place(icons, { left: Math.max(8, Math.min(ar.left, innerWidth - 348)), top: ar.bottom + 4 });
@@ -151,7 +151,7 @@
       sep(b);
       if (z) { btn(b, '⤒', '置顶', () => cb.z('top')); btn(b, '⤓', '置底', () => cb.z('bottom')); sep(b); }
       btn(b, '🗑', '删除', () => cb.remove());
-      btn(b, '💬 问 Claude', '问 Claude', () => cb.ask(), 'ppt-ask');
+      btn(b, `💬 问 ${PPTAgent.name()}`, `问 ${PPTAgent.name()}`, () => cb.ask(), 'ppt-ask');
     };
     const borders = (b) => {
       colorBtn(b, '□', '边框颜色', (c) => cb.border({ color: c }));

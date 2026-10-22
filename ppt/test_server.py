@@ -464,6 +464,52 @@ class WaitTests(unittest.TestCase):  # --wait: Codex's waiting loop
         self.assertIn("e1 intent", out.getvalue())
 
 
+class AgentTests(ServerCase):  # which agent is listening, shown on the page and in history labels
+    def state(self):
+        return json.loads(self.req("GET", "/api/state?t=tok")[1])
+
+    def test_agent_defaults_to_claude(self):
+        self.assertEqual(self.state()["agent"], "Claude")
+        self.assertEqual(server.claude_label(self.deck), "Claude 修改")
+
+    def test_agent_name_from_listener(self):
+        server.write_agent(self.deck, "Codex")
+        self.assertEqual(self.state()["agent"], "Codex")
+        server.reply(self.deck, "e3", ack=True)
+        self.assertEqual(server.claude_label(self.deck), "Codex 处理 #e3")
+
+    def test_agent_name_is_sanitised(self):
+        f = server.runtime(self.deck) / "agent"
+        f.write_text("  \n", encoding="utf-8")
+        self.assertEqual(server.read_agent(self.deck), "Claude")
+        f.write_text("A" * 50 + "\nx", encoding="utf-8")
+        self.assertEqual(server.read_agent(self.deck), "A" * 20)
+
+    def test_online_while_processing(self):
+        hb = server.runtime(self.deck) / "heartbeat"
+        hb.write_text("x")
+        old = lambda secs: os.utime(hb, (_time.time() - secs, _time.time() - secs))
+        old(120)
+        self.assertFalse(self.state()["online"])  # nothing in progress
+        self.req("POST", "/api/event?t=tok", {"type": "intent", "slide_id": "s-cover", "text": "a"})
+        server.reply(self.deck, "e1", ack=True)
+        old(120)
+        self.assertTrue(self.state()["online"])
+        old(700)
+        self.assertFalse(self.state()["online"])
+
+    def test_reply_and_ack_touch_heartbeat(self):
+        hb = server.runtime(self.deck) / "heartbeat"
+        self.assertFalse(hb.exists())
+        server.reply(self.deck, "e1", ack=True)
+        self.assertTrue(hb.exists())
+        self.assertLess(_time.time() - hb.stat().st_mtime, 5)
+
+    def test_tail_writes_agent(self):
+        server.tail(self.deck, lambda s: None, stop=lambda: True, agent="Codex")
+        self.assertEqual(server.read_agent(self.deck), "Codex")
+
+
 PNG_1PX = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")).decode()

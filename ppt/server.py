@@ -36,6 +36,7 @@ SERVER_CHECK_SECS = 5
 RECENT_DONE = 10
 STOPPED = "服务已停止：重新运行 --detach 启动，再把网址告诉用户"
 ONLINE_SECS = 30
+WORKING_SECS = 600  # an acked event keeps the page "online" this long after the last heartbeat (a crashed session can't hold it forever)
 HISTORY_MAX = 200
 WATCH_SECS = 0.5
 LOCK = threading.Lock()
@@ -232,8 +233,11 @@ def state(deck):
                            "rect": e.get("rect"), "text": e.get("text", ""), "status": status, "reply": reply})
         elif t == "import":
             events.append({"id": e["id"], "type": "import", "status": status, "reply": reply, "original": e.get("original")})
+    age = time.time() - hb.stat().st_mtime if hb.exists() else None
+    working = "processing" in st.values()
     return {"version": deck_version(deck),
-            "online": hb.exists() and time.time() - hb.stat().st_mtime < ONLINE_SECS,
+            "online": age is not None and (age < ONLINE_SECS or (working and age < WORKING_SECS)),
+            "agent": read_agent(deck),
             "events": events}
 
 
@@ -257,9 +261,10 @@ def safe_summary(e):
         return f"{e.get('id')} {e.get('type')} (unreadable event, see .ppt/inbox.jsonl)"
 
 
-def tail(deck, emit, stop=lambda: False, interval=0.5):
+def tail(deck, emit, stop=lambda: False, interval=0.5, agent="Claude"):
     """Emit every unfinished event, then follow the inbox. Heartbeat lets the page show 'Claude online'."""
     rt = runtime(deck)
+    write_agent(deck, agent)
     inbox, hb = rt / "inbox.jsonl", rt / "heartbeat"
     events, st = read_jsonl(inbox), statuses(deck)
     said = {r.get("re"): r.get("text", "") for r in outbox_rows(deck) if not r.get("ack")}
@@ -294,6 +299,15 @@ def idle_stop_text(idle):
 
 def write_agent(deck, name):
     (runtime(deck) / "agent").write_text(name, encoding="utf-8")
+
+
+def read_agent(deck):
+    """The last agent that listened (kept after its heartbeat stops); 'Claude' when unknown."""
+    try:
+        name = (runtime(deck) / "agent").read_text(encoding="utf-8").strip().splitlines()
+    except OSError:
+        name = []
+    return name[0].strip()[:20] if name and name[0].strip() else "Claude"
 
 
 def wait_events(deck, emit, recent=False, idle=900, agent="Claude", stop=lambda: False, interval=0.5):
@@ -347,6 +361,7 @@ def wait_events(deck, emit, recent=False, idle=900, agent="Claude", stop=lambda:
 
 def reply(deck, eid, text="", ack=False):
     append_jsonl(runtime(deck) / "outbox.jsonl", {"re": eid, "text": text, "ack": ack, "ts": now_iso()})
+    (runtime(deck) / "heartbeat").write_text(now_iso(), encoding="utf-8")  # the agent is at work even outside --wait
 
 
 def outbox_rows(deck):
@@ -359,7 +374,8 @@ def claude_label(deck, since=0):
     recent = [r.get("re") for r in outbox_rows(deck)[since:] if r.get("re")]
     working = [i for i, s in statuses(deck).items() if s == "processing"]
     eid = recent[-1] if recent else working[-1] if working else None
-    return f"Claude 处理 #{eid}" if eid else "Claude 修改"
+    who = read_agent(deck)
+    return f"{who} 处理 #{eid}" if eid else f"{who} 修改"
 
 
 class History:
@@ -989,7 +1005,7 @@ def main(argv=None):
         wait_events(deck, lambda s: print(s, flush=True), a.recent, a.idle, a.agent)
         return
     if a.tail:
-        return tail(deck, lambda s: print(s, flush=True))
+        return tail(deck, lambda s: print(s, flush=True), agent=a.agent)
     if made:
         print(f"已从模板新建 {deck / 'deck.html'}", flush=True)
     if a.detach:

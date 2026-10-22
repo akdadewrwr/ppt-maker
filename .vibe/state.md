@@ -1,17 +1,16 @@
 ## 上一轮完成
-- Codex 接入（子项目 7）已合并到 main 并推送，feat/codex 分支已删除（本地+远端）。
-- 用户实测：交互式 Codex `$ppt` 和 Claude `/ppt` 都正常。
+- 顶栏新增"✓ 清除标记"按钮（标题"清除已完成标记"）：一次关掉所有绿色已完成标记，排队中/处理中的保留。分支 feat/clear-done 已推送。
 
 ## 关键结论
-- main 上：server 157 OK、selftest 99/99、e2e 197/197。
-- Codex 需要 ~/.codex/config.toml 的 windows.sandbox / network_access / writable_roots（已为用户加好）；skill 在 ~/.agents/skills/ppt（改 codex/skills/ppt 后重跑 --install-codex）。
+- 原因：清单里每条都有绿框，但只有第一条带回执气泡和 ×，其余关不掉。
+- e2e 198/198、selftest 99/99；"导出中改稿"那条检查偶发失败一次，重跑通过（与本改动无关）。
 
 ## 改动文件
-- 无（合并）
+- ppt/toolbar.js、ppt/editor.js、tests/e2e.mjs
 
 ## 当前 blocker
 - 无
 
 ## 下一步
-- 延后的次要问题 4 条：游标文件损坏时多打印一次、Claude 入口缺 PDF→Read 提示、轮询全量读、重装覆盖本地修改。
-- 候选：更还原的 pptx 导入（用户实测暂够用）。
+- 等用户确认合并 feat/clear-done → main。
+- 延后次要问题 4 条（见 Codex 子项目）；"导出中改稿"e2e 检查偶发失败，可改为更稳的等待。

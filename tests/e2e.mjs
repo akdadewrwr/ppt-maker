@@ -830,7 +830,7 @@ print(json.dumps({"n": len(p.slides), "texts": [sh.text_frame.text for s in p.sl
     let seen = false;
     for (let i = 0; i < 100 && !seen; i++) { await sleep(300); seen = ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导出完成'); }
     check('X a deck change during an export waits for it to finish before reloading', seen);
-    await sleep(2500); }
+    await sleep(1000); for (let i = 0; i < 40 && !(await byTitle('导入以前做过的 HTML')); i++) await sleep(250); }  // the deferred reload lands after the export
   const pptxPath = path.join(SCRATCH, '旧稿.pptx');
   execFileSync('python', ['-c', `import sys
 from pptx import Presentation

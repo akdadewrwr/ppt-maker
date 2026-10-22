@@ -28,7 +28,7 @@
       note.value = b.note || '';
       note.addEventListener('input', () => cb.set({ ...cb.get(), note: note.value }, false));
       const row = el('div', 'ppt-row', body);
-      btn(row, `全部发送（${b.items.length} 条）`, '把清单作为一个整体发给 Claude', () => cb.send(), 'ppt-ask');
+      btn(row, `全部发送（${b.items.length} 条）`, `把清单作为一个整体发给 ${PPTAgent.name()}`, () => cb.send(), 'ppt-ask');
       btn(row, '清空', '清空待发清单', () => cb.set({ note: '', items: [] }));
       b.items.forEach((it, i) => {
         const card = el('div', 'ppt-kb-item', body);

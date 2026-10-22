@@ -332,14 +332,14 @@ def wait_events(deck, emit, recent=False, idle=900, agent="Claude", stop=lambda:
         if todo:
             return "events"
         cursor = len(events)
-    seen, beat, checked, quiet = len(events), 0.0, 0.0, time.time()
+    seen, beat, checked, quiet, up = len(events), 0.0, 0.0, time.time(), None
     while not stop():
         if time.time() - beat >= HEARTBEAT_SECS:
             hb.write_text(now_iso(), encoding="utf-8")
             beat = time.time()
         if time.time() - checked >= SERVER_CHECK_SECS:
-            checked = time.time()
-            if server_up(deck) is False:
+            checked, was, up = time.time(), up, server_up(deck)
+            if up is False or (was and not up):
                 emit(STOPPED)
                 return "stopped"
         events, st = read_jsonl(inbox), statuses(deck)

@@ -184,7 +184,7 @@
   // ---- sketch mode: freehand over one slide, then send it to Claude or keep it as ink ----
   function openSketch(slide) {
     if (sketch || !slide) return;
-    if (!slide.id) return toast(NO_ID); // drafts and the ink object are keyed by the slide id
+    if (!slide.id) return toast(noId()); // drafts and the ink object are keyed by the slide id
     if (editing) endEdit();
     closePop(); disarm(); select(null);
     document.documentElement.classList.add('ppt-sketching'); // top bar off: undo, page and insert buttons would act under the board
@@ -285,8 +285,7 @@
       if (e.title.includes(old)) e.title = swap(e.title);
       if (e.placeholder?.includes(old)) e.placeholder = swap(e.placeholder);
     }
-    const w = document.createTreeWalker(ui, NodeFilter.SHOW_TEXT);
-    for (let t; (t = w.nextNode());) if (t.nodeValue.includes(old)) t.nodeValue = swap(t.nodeValue);
+    for (const b of ui.querySelectorAll('button')) if (b.childElementCount === 0 && b.textContent.includes(old)) b.textContent = swap(b.textContent);
   }
 
   // ---- polling ----
@@ -350,9 +349,9 @@
       x.onclick = () => { ls.set('ppt-dismissed', [...dismissed, rootId]); render(); };
       for (const e of items) {
         el('p', null, bub).append(el('span', 'who', null, '你：'), e.text);
-        if (e.reply) el('p', null, bub).append(el('span', 'who', null, 'Claude：'), e.reply);
+        if (e.reply) el('p', null, bub).append(el('span', 'who', null, `${PPTAgent.name()}：`), e.reply);
       }
-      const ta = el('textarea', null, bub); ta.placeholder = '回复 Claude…（Enter 发送）';
+      const ta = el('textarea', null, bub); ta.placeholder = `回复 ${PPTAgent.name()}…（Enter 发送）`;
       ta.onkeydown = (k) => {
         if (k.key !== 'Enter' || k.shiftKey || !ta.value.trim()) return;
         k.preventDefault();
@@ -378,7 +377,7 @@
       drag = { mode: 'draw', shape: armed, slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
       return place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
     }
-    if (selected && selected.contains(e.target) && isObj(selected) && !selected.id) return toast(NO_ID);
+    if (selected && selected.contains(e.target) && isObj(selected) && !selected.id) return toast(noId());
     if (selected && selected.contains(e.target) && (movable(selected) || isObj(selected))) return beginDrag('move', selected, e);
     drag = { mode: 'area', slide, x0: e.clientX, y0: e.clientY, box: el('div', 'ppt-abs ppt-sel', ui) };
     place(drag.box, { left: e.clientX, top: e.clientY, width: 0, height: 0 });
@@ -492,7 +491,7 @@
       onSend(text, toBatch);
     };
     const row = el('div', 'ppt-row', node);
-    for (const [label2, title, toBatch] of [['发送', '立刻发给 Claude', false], ['加入清单', '先放进待发清单（Ctrl+Enter）', true]]) {
+    for (const [label2, title, toBatch] of [['发送', `立刻发给 ${PPTAgent.name()}`, false], ['加入清单', '先放进待发清单（Ctrl+Enter）', true]]) {
       const b = el('button', 'ppt-btn', row, label2); b.type = 'button'; b.title = title;
       b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the textarea focused
       b.addEventListener('click', () => go(toBatch));
@@ -539,7 +538,7 @@
       const r = await fetch(path, init);
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || String(r.status));
-      toast('已提交导入，等 Claude 转换');
+      toast(`已提交导入，等 ${PPTAgent.name()} 转换`);
     } catch (e) { toast(`没有导入：${e.message}`); }
   }
   var exporting = false; // var: poll() reads it
@@ -703,9 +702,9 @@
   });
   // ---- direct edits: ops applied live, queued, then saved onto the file text ----
   let chain = Promise.resolve();
-  const NO_ID = '这个元素还没有 id，等 Claude 补上后才能修改';
+  const noId = () => `这个元素还没有 id，等 ${PPTAgent.name()} 补上后才能修改`;
   function commit(op) {
-    if ('target' in op && !op.target) { toast(NO_ID); return lastSave; } // Claude left out the id: lint asks it to add one
+    if ('target' in op && !op.target) { toast(noId()); return lastSave; } // Claude left out the id: lint asks it to add one
     if (!O.apply(document, op)) { toast('这一步没有生效（目标已不存在）'); return lastSave; }
     ls.set('ppt-ops', [...ls.get('ppt-ops', []), op]); // survives reloads, server restarts and closed tabs
     return (lastSave = persist());

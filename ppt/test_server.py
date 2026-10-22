@@ -456,6 +456,13 @@ class WaitTests(unittest.TestCase):  # --wait: Codex's waiting loop
         self.assertEqual(got, "stopped")
         self.assertTrue(any("服务已停止" in l for l in lines))
 
+    def test_wait_notices_a_server_that_stopped_cleanly(self):  # review I1: --stop and a clean exit delete server.json
+        ups = iter([True])
+        with mock.patch.object(server, "server_up", side_effect=lambda d: next(ups, None)), mock.patch.object(server, "SERVER_CHECK_SECS", 0):
+            got, lines = self.wait(rounds=1000, idle=60)
+        self.assertEqual(got, "stopped")
+        self.assertTrue(any("服务已停止" in l for l in lines))
+
     def test_wait_cli(self):
         self.add("e1")
         out = io.StringIO()
@@ -530,6 +537,19 @@ class PromptTests(unittest.TestCase):  # one set of rules for every agent, an en
         self.assertIn("\ndescription:", codex.split("---")[1])
         for s in ("--wait --recent --agent Codex", "--wait --agent Codex", "已停止监听", "windows.sandbox", "unelevated", "{{PPT_HOME}}"):
             self.assertIn(s, codex)
+
+    def test_page_text_names_no_fixed_agent(self):  # review I2: every user-facing "Claude" goes through PPTAgent.name()
+        import re
+        fixed = []
+        for f in sorted((self.ROOT / "ppt").glob("*.js")):
+            for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split(" // ")[0]
+                if not code.lstrip().startswith("//") and re.search(r"(['\"`])[^'\"`]*Claude[^'\"`]*\1", code):
+                    fixed.append(f"{f.name}:{n}")
+        self.assertEqual(fixed, [])
+
+    def test_codex_acks_everything_it_is_shown(self):  # review: an event never acked makes every --wait return at once
+        self.assertIn("每个输出的事件都要", self.read("codex/skills/ppt/SKILL.md"))
 
     def test_claude_entry_keeps_its_loop(self):
         claude = self.read(".claude/commands/ppt.md")

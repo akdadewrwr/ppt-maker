@@ -929,9 +929,29 @@ def make_server(deck, port=8765, token=None, tries=20, idle=IDLE_SECS):
     return srv
 
 
+CODEX_CONFIG = """[windows]
+sandbox = "unelevated"
+
+[sandbox_workspace_write]
+network_access = true
+writable_roots = ["{home}/.ppt-maker"]"""
+
+
+def install_codex(home):
+    """Copy the Codex skill to <home>/.agents/skills/ppt with this checkout's path filled in."""
+    repo = Path(__file__).resolve().parent.parent
+    dst = Path(home) / ".agents" / "skills" / "ppt"
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(repo / "codex" / "skills" / "ppt", dst)
+    for f in dst.rglob("*.md"):
+        f.write_text(f.read_text(encoding="utf-8").replace("{{PPT_HOME}}", repo.as_posix()), encoding="utf-8")
+    (Path(home) / ".ppt-maker").mkdir(exist_ok=True)  # Codex can only make an existing dir writable
+    return dst
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="ppt-maker local server")
-    ap.add_argument("deck")
+    ap.add_argument("deck", nargs="?")
     ap.add_argument("rest", nargs="*", help="--reply: <event_id> [text]")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-open", action="store_true")
@@ -949,14 +969,23 @@ def main(argv=None):
     ap.add_argument("--detach", action="store_true", help="start the server as its own process, or reuse the running one")
     ap.add_argument("--stop", action="store_true", help="stop this deck's server")
     ap.add_argument("--export", action="store_true", help="export this deck to .pptx from the terminal")
+    ap.add_argument("--install-codex", action="store_true", help="install the $ppt skill for Codex CLI")
     a = ap.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if a.install_codex:
+        d = install_codex(Path.home())
+        print(f"已安装 Codex skill：{d}\n在 Codex 里输入 $ppt <名字> 使用。")
+        print("请在 ~/.codex/config.toml 加上（Windows 上运行命令需要第一段；网页资料和全局知识库需要第二段）：\n")
+        print(CODEX_CONFIG.format(home=Path.home().as_posix()))
+        return
+    if not a.deck:
+        ap.error("deck is required")
     deck = Path(a.deck).resolve()
     serving = not (a.tail or a.wait or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail or a.stop or a.export)
     made = serving and ensure_deck(deck)  # only starting the server makes a deck; other commands need a real one
     if not (deck / "deck.html").is_file():
         ap.error(f"{deck / 'deck.html'} not found")
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
     if a.stop:
         return stop_server(deck)
     if a.export:

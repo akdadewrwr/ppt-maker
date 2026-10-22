@@ -537,6 +537,32 @@ class PromptTests(unittest.TestCase):  # one set of rules for every agent, an en
             self.assertIn(s, claude)
         self.assertNotIn("## deck.html 格式规则", claude)  # moved to the common rules
 
+    def test_install_codex(self):
+        home = Path(tempfile.mkdtemp())
+        try:
+            d = server.install_codex(home)
+            self.assertEqual(d, home / ".agents" / "skills" / "ppt")
+            text = (d / "SKILL.md").read_text(encoding="utf-8")
+            self.assertNotIn("{{PPT_HOME}}", text)
+            self.assertIn(self.ROOT.as_posix() + "/ppt/server.py", text)
+            self.assertTrue((home / ".ppt-maker").is_dir())  # an existing dir, so it can be a Codex writable root
+            server.install_codex(home)  # again: replaces, no error
+            self.assertEqual((d / "SKILL.md").read_text(encoding="utf-8"), text)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_install_codex_cli(self):
+        home = Path(tempfile.mkdtemp())
+        try:
+            out = io.StringIO()
+            with mock.patch.object(Path, "home", return_value=home), contextlib.redirect_stdout(out):
+                server.main(["--install-codex"])
+            self.assertIn('sandbox = "unelevated"', out.getvalue())
+            self.assertIn("$ppt", out.getvalue())
+            self.assertTrue((home / ".agents" / "skills" / "ppt" / "SKILL.md").is_file())
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
 
 PNG_1PX = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"

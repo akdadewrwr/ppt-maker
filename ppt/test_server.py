@@ -380,6 +380,90 @@ class DetachTests(unittest.TestCase):  # the server runs on its own, not as a Cl
         self.assertTrue(any("服务已停止" in l for l in lines))
 
 
+class WaitTests(unittest.TestCase):  # --wait: Codex's waiting loop
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.deck = self.tmp / "deck"
+        server.ensure_deck(self.deck)
+        self.inbox = server.runtime(self.deck) / "inbox.jsonl"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def add(self, eid, typ="intent", **k):
+        server.append_jsonl(self.inbox, {"id": eid, "type": typ, "text": f"做{eid}", **k})
+
+    def wait(self, rounds=40, **k):  # stop after `rounds` polls so a broken wait can never hang the suite
+        n, lines = [0], []
+        def stop():
+            n[0] += 1
+            return n[0] > rounds
+        got = server.wait_events(self.deck, lines.append, stop=stop, interval=0.05, **k)
+        return got, lines
+
+    def test_wait_ignores_edits_then_returns_with_them(self):
+        self.add("e1", "edit", label="移动 b-left")
+        threading.Timer(0.3, lambda: self.add("e2")).start()
+        got, lines = self.wait()
+        self.assertEqual(got, "events")
+        self.assertEqual([l.split()[0] for l in lines], ["e1", "e2"])
+
+    def test_wait_never_repeats_acked(self):
+        self.add("e1")
+        self.assertEqual(self.wait()[0], "events")
+        server.reply(self.deck, "e1", ack=True)
+        got, lines = self.wait(rounds=3)
+        self.assertNotEqual(got, "events")
+        self.assertFalse(any(l.startswith("e1 ") for l in lines))
+
+    def test_wait_returns_unacked_before_cursor(self):
+        self.add("e1")
+        self.wait()
+        got, lines = self.wait(rounds=3)
+        self.assertEqual(got, "events")
+        self.assertTrue(lines[0].startswith("e1 "))
+
+    def test_wait_recent_lists_done_and_processing(self):
+        for i in range(1, 13):
+            self.add(f"e{i}")
+            if i < 12:
+                server.reply(self.deck, f"e{i}", f"改好了{i}")
+        server.reply(self.deck, "e12", ack=True)
+        got, lines = self.wait(rounds=3, recent=True)
+        self.assertEqual(got, "events")
+        self.assertEqual(len([l for l in lines if l.startswith("最近完成")]), 10)
+        self.assertTrue(any(l.startswith("e12 ") for l in lines))
+
+    def test_wait_idle_stop(self):
+        t = _time.time()
+        got, lines = self.wait(rounds=1000, idle=1)
+        self.assertEqual(got, "idle")
+        self.assertLess(_time.time() - t, 3)
+        self.assertIn("已停止监听", lines[-1])
+        self.assertIn("--wait", lines[-1])
+        self.assertTrue(server.idle_stop_text(900).startswith("15 分钟没有新操作"))
+
+    def test_wait_edit_resets_idle(self):
+        threading.Timer(0.8, lambda: self.add("e1", "edit", label="改字")).start()
+        t = _time.time()
+        got, _ = self.wait(rounds=1000, idle=1.5)
+        self.assertEqual(got, "idle")
+        self.assertGreater(_time.time() - t, 2)
+
+    def test_wait_returns_when_server_stops(self):
+        (server.runtime(self.deck) / "server.json").write_text(json.dumps({"pid": 0, "port": 9, "url": "x", "token": "t"}), encoding="utf-8")
+        got, lines = self.wait(rounds=1000, idle=60)
+        self.assertEqual(got, "stopped")
+        self.assertTrue(any("服务已停止" in l for l in lines))
+
+    def test_wait_cli(self):
+        self.add("e1")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            server.main([str(self.deck), "--wait", "--idle", "1"])
+        self.assertIn("e1 intent", out.getvalue())
+
+
 PNG_1PX = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")).decode()

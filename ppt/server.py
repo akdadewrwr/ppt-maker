@@ -288,6 +288,63 @@ def tail(deck, emit, stop=lambda: False, interval=0.5):
         time.sleep(interval)
 
 
+def idle_stop_text(idle):
+    return f"{max(1, round(idle / 60))} 分钟没有新操作，已停止监听。用户说“继续”后重新运行 --wait。"
+
+
+def write_agent(deck, name):
+    (runtime(deck) / "agent").write_text(name, encoding="utf-8")
+
+
+def wait_events(deck, emit, recent=False, idle=900, agent="Claude", stop=lambda: False, interval=0.5):
+    """Block until there is an event to handle (edits alone don't count), print it with the edits before it, return.
+    For agents that cannot be woken by a background watcher (Codex). Returns 'events' | 'idle' | 'stopped' (server gone)."""
+    rt = runtime(deck)
+    inbox, hb, cur_file = rt / "inbox.jsonl", rt / "heartbeat", rt / "wait-cursor"
+    write_agent(deck, agent)
+    try:
+        cursor = int(cur_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cursor = 0
+    events, st = read_jsonl(inbox), statuses(deck)
+    if recent:  # a new session: what was done lately, and everything not finished, acked or not
+        said = {r.get("re"): r.get("text", "") for r in outbox_rows(deck) if not r.get("ack")}
+        for e in [e for e in events if e.get("type") in REPLY_TYPES and st.get(e.get("id")) == "done"][-RECENT_DONE:]:
+            emit(f"最近完成 {safe_summary(e)} → {said.get(e.get('id'), '')[:120]}")
+        todo = [e for e in events if e.get("type") in REPLY_TYPES and st.get(e.get("id")) != "done"]
+        for e in todo:
+            emit(safe_summary(e))
+        cur_file.write_text(str(len(events)), encoding="utf-8")
+        if todo:
+            return "events"
+        cursor = len(events)
+    seen, beat, checked, quiet = len(events), 0.0, 0.0, time.time()
+    while not stop():
+        if time.time() - beat >= HEARTBEAT_SECS:
+            hb.write_text(now_iso(), encoding="utf-8")
+            beat = time.time()
+        if time.time() - checked >= SERVER_CHECK_SECS:
+            checked = time.time()
+            if server_up(deck) is False:
+                emit(STOPPED)
+                return "stopped"
+        events, st = read_jsonl(inbox), statuses(deck)
+        if len(events) > seen:
+            seen, quiet = len(events), time.time()
+        pending = {e.get("id") for e in events if e.get("type") in REPLY_TYPES and e.get("id") not in st}
+        if pending:
+            for i, e in enumerate(events):
+                if e.get("id") in pending or i >= cursor:
+                    emit(safe_summary(e))
+            cur_file.write_text(str(len(events)), encoding="utf-8")
+            return "events"
+        if time.time() - quiet >= idle:
+            emit(idle_stop_text(idle))
+            return "idle"
+        time.sleep(interval)
+    return None  # stopped by the caller (tests)
+
+
 def reply(deck, eid, text="", ack=False):
     append_jsonl(runtime(deck) / "outbox.jsonl", {"re": eid, "text": text, "ack": ack, "ts": now_iso()})
 
@@ -863,6 +920,10 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--tail", action="store_true", help="print pending/new events (run under Claude Code Monitor)")
+    ap.add_argument("--wait", action="store_true", help="block until there is an event to handle, print it, exit (Codex)")
+    ap.add_argument("--recent", action="store_true", help="with --wait: start of a session, also list recent and unfinished work")
+    ap.add_argument("--idle", type=float, default=900, help="with --wait: stop after this many seconds without activity")
+    ap.add_argument("--agent", default="Claude", help="with --wait/--tail: the agent's name shown on the page")
     ap.add_argument("--reply", action="store_true", help="write a reply: <deck> <event_id> [text]")
     ap.add_argument("--ack", action="store_true", help="with --reply: mark the event as being processed")
     ap.add_argument("--kb-done", action="store_true", help="mark a kb item digested: <deck> <scope> <id> <title> <summary>")
@@ -874,7 +935,7 @@ def main(argv=None):
     ap.add_argument("--export", action="store_true", help="export this deck to .pptx from the terminal")
     a = ap.parse_args(argv)
     deck = Path(a.deck).resolve()
-    serving = not (a.tail or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail or a.stop or a.export)
+    serving = not (a.tail or a.wait or a.reply or a.import_src or a.kb_add or a.kb_done or a.kb_fail or a.stop or a.export)
     made = serving and ensure_deck(deck)  # only starting the server makes a deck; other commands need a real one
     if not (deck / "deck.html").is_file():
         ap.error(f"{deck / 'deck.html'} not found")
@@ -924,6 +985,9 @@ def main(argv=None):
         if not a.rest:
             ap.error("--reply needs an event id")
         return reply(deck, a.rest[0], " ".join(a.rest[1:]), a.ack)
+    if a.wait:
+        wait_events(deck, lambda s: print(s, flush=True), a.recent, a.idle, a.agent)
+        return
     if a.tail:
         return tail(deck, lambda s: print(s, flush=True))
     if made:

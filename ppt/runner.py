@@ -1,6 +1,12 @@
 """ppt-maker runner: the agent session's job (wait -> handle -> reply) done by the user's own agent command or LLM API."""
-import re
+import argparse, contextlib, os, re, signal, subprocess, sys, threading
 from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import server
+
+REPO = Path(__file__).resolve().parent.parent
 
 CONFLICT = "你刚改了这页，我没覆盖，请再说一次"
 TAG = re.compile(r"<(/?)section\b[^>]*>", re.I)
@@ -119,3 +125,148 @@ def apply_changes(html, resp, sent):
     if dup:
         return None, f"id 重复：{', '.join(dup[:5])}"
     return html, None
+
+
+# ---- the loop ----
+def pending(deck):
+    st = server.statuses(deck)
+    return [e for e in server.read_jsonl(server.runtime(deck) / "inbox.jsonl")
+            if e.get("type") in server.REPLY_TYPES and st.get(e.get("id")) != "done"]
+
+
+@contextlib.contextmanager
+def beating(deck):
+    """Keep the page showing us online while one handle runs (an LLM call or an agent can take minutes)."""
+    done = threading.Event()
+    hb = server.runtime(deck) / "heartbeat"
+    def beat():
+        while True:
+            hb.write_text(server.now_iso(), encoding="utf-8")
+            if done.wait(server.HEARTBEAT_SECS):
+                return
+    t = threading.Thread(target=beat, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        done.set()
+        t.join()
+
+
+def finish(deck, evs, text):
+    """Reply to every event of `evs` that is still not done (never twice)."""
+    st = server.statuses(deck)
+    for e in evs:
+        if st.get(e["id"]) != "done":
+            server.reply(deck, e["id"], text)
+
+
+def run(deck, handle, name, stop=lambda: False, interval=0.5):
+    first = True
+    while True:
+        lines = []
+        got = server.wait_events(deck, lines.append, recent=first, idle=float("inf"), agent=name, stop=stop, interval=interval)
+        first = False  # the first wait also picks up what a crashed run left half done
+        for line in lines:
+            print(line, flush=True)
+        if got == "stopped":
+            return "stopped"
+        if got != "events":
+            return None
+        evs = pending(deck)
+        for e in evs:
+            server.reply(deck, e["id"], ack=True)
+        with beating(deck):
+            try:
+                handle(evs, lines)
+            except Exception as x:  # one bad event must never stop the loop
+                print(f"出错：{type(x).__name__}: {x}", file=sys.stderr, flush=True)
+                finish(deck, evs, f"没改成：{type(x).__name__}")
+
+
+# ---- agent backend ----
+def agent_prompt(deck, lines):
+    py = Path(sys.executable).as_posix()
+    return ((REPO / "prompts" / "ppt-common.md").read_text(encoding="utf-8")
+            + f"\n\n## 路径\n- 上面的 `ppt/…` 指 `{REPO.as_posix()}/ppt/…`；`decks/<名字>` 指 `{Path(deck).as_posix()}`。"
+            + f"\n- 命令里的 `python` 用 `{py}`，路径一律加引号。例：`\"{py}\" \"{REPO.as_posix()}/ppt/server.py\" --reply \"{Path(deck).as_posix()}\" <id> --ack`"
+            + "\n\n## 这次要处理的操作\n" + "\n".join(lines)
+            + "\n\n处理完每个事件都要先 --ack 再 --reply（不需要改动的也回执一句说明）；处理完就退出，不要运行 --wait 或 --tail。\n")
+
+
+def kill_tree(p):
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
+    else:
+        with contextlib.suppress(OSError):
+            os.killpg(p.pid, signal.SIGKILL)
+
+
+def agent_handle(deck, cmd, timeout, name):
+    deck = Path(deck).resolve()
+    def handle(evs, lines):
+        prompt = agent_prompt(deck, lines)
+        pf = server.runtime(deck) / "runner-prompt.md"
+        pf.write_bytes(prompt.encode("utf-8"))
+        c = cmd.replace("{prompt}", f'"{pf}"').replace("{deck}", f'"{deck}"')
+        with pf.open("rb") as stdin:  # a file, not a pipe: a child that never reads stdin can't block us before the timeout starts
+            p = subprocess.Popen(c, shell=True, cwd=deck.parent.parent, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 start_new_session=os.name != "nt")
+        try:
+            out, err = p.communicate(timeout=timeout)
+            code = p.returncode
+        except subprocess.TimeoutExpired:
+            kill_tree(p)  # the shell's children too, or their open pipes would block us
+            code, out, err = "超时", b"", b""
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                out, err = p.communicate(timeout=5)
+        out, err = (out or b"").decode("utf-8", "replace"), (err or b"").decode("utf-8", "replace")
+        if out.strip():
+            print(out.strip()[-2000:], flush=True)
+        finish(deck, evs, f"{name} 没有回执这条（退出码 {code}）：{err.strip()[-300:]}")
+    return handle
+
+
+# ---- cli ----
+KEY_HELP = "请先设置环境变量 PPT_API_KEY（PowerShell：$env:PPT_API_KEY=\"…\"；bash：export PPT_API_KEY=…）"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="ppt-maker runner: handle the page's events with your own agent command or LLM API")
+    ap.add_argument("deck")
+    ap.add_argument("--backend", choices=("agent", "llm"), required=True)
+    ap.add_argument("--cmd", help="agent: shell command run for each batch of events; {prompt} / {deck} are replaced, the prompt is also on stdin")
+    ap.add_argument("--base-url", help="llm: OpenAI-compatible base url, e.g. https://api.deepseek.com/v1")
+    ap.add_argument("--model", help="llm: model name")
+    ap.add_argument("--name", help="name shown on the page")
+    ap.add_argument("--timeout", type=float, help="seconds per agent run (600) or llm request (180)")
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--no-open", action="store_true")
+    a = ap.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    deck = Path(a.deck).resolve()
+    if a.backend == "agent":
+        if not a.cmd:
+            ap.error("--backend agent needs --cmd")
+        name = (a.name or "Agent")[:20]
+        handle = agent_handle(deck, a.cmd, a.timeout or 600, name)
+    else:
+        if not (a.base_url and a.model):
+            ap.error("--backend llm needs --base-url and --model")
+        key = os.environ.get("PPT_API_KEY", "").strip()
+        if not key:
+            raise SystemExit(KEY_HELP)
+        name = (a.name or a.model)[:20]
+        handle = llm_handle(deck, a.base_url, key, a.model, a.timeout or 180, name)
+    server.detach(deck, a.port, not a.no_open)
+    print(f"已开始监听（{name}），Ctrl+C 退出", flush=True)
+    try:
+        if run(deck, handle, name) == "stopped":
+            print("服务已停止，runner 退出。重新运行这条命令即可。", flush=True)
+    except KeyboardInterrupt:
+        print("已退出", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -110,6 +110,41 @@ class SurgeryTests(unittest.TestCase):
         theme_changed = self.html.replace("#111", "#222")
         self.assertEqual(self.apply({"theme": THEME}, html=theme_changed)[1], runner.CONFLICT)
 
+    def test_review_c1_filter_bypasses(self):  # each of these ran script or reached the network in the editor page
+        for bad in ("<svg/onload=alert(1)>", '<img alt=">" onerror=alert(1) src=x>', '<iframe srcdoc="&lt;script&gt;parent.PPT&lt;/script&gt;"></iframe>',
+                    '<a href="&#106;avascript:alert(1)">x</a>', '<a href="java\tscript:alert(1)">x</a>', '<img src="//evil.example/p.png">',
+                    '<embed src="x.swf">', '<object data="x"></object>', '<base href="x">', '<div style="background:url(//evil/x.png)"></div>',
+                    '<svg><use href="https://evil/x.svg#a"></use></svg>', '<div STYLE="background:URL(&quot;http://e/x&quot;)"></div>'):
+            with self.subTest(bad):
+                self.assertRejected({"slides": [{"id": "s-a", "html": page("s-a", bad)}]})
+
+    def test_review_i1_page_that_swallows_the_rest(self):
+        for bad in ("<!--", "<style>", "<textarea>", "<title>", "<xmp>", "<plaintext>", "<b>bold", "</div>", "<![CDATA["):
+            with self.subTest(bad):
+                self.assertRejected({"slides": [{"id": "s-a", "html": page("s-a", bad)}]})
+        for ok in ("<p>one<p>two", "<ul><li>a<li>b</ul>", "<!-- note --><br><img src=\"assets/a.png\">", "<svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>"):
+            with self.subTest(ok):
+                self.assertIsNone(self.apply({"slides": [{"id": "s-a", "html": page("s-a", ok)}]})[1])
+        self.assertRejected({"theme": '<style id="theme">x</style><!--'})
+        self.assertRejected({"theme": '<style id="theme">x</style><p>'})
+
+    def test_review_i2_comments_and_attribute_values(self):
+        html = deck(("s-a", '<!-- old </section> --><div class="block" id="b-9">tail</div>'), ("s-b", "B"))
+        self.assertEqual([i for i, _, _ in runner.sections(html)], ["s-a", "s-b"])
+        out, why = self.apply({"slides": [{"id": "s-a", "html": page("s-a", "NEW")}]}, html=html, sent=runner.snapshot(html, ["s-a", "s-b"]))
+        self.assertIsNone(why)
+        self.assertNotIn("tail", out)
+        self.assertNotIn("-->", out)
+        tricky = '<section class="slide" title=\'id="s-a"\' id="s-zzz">x</section>'
+        self.assertRejected({"slides": [{"id": "s-a", "html": tricky}]})
+        css = deck(("s-a", "A"), ("s-b", "B")).replace(":root{--fg:#111}", ':root{--fg:#111} [id="s-a"]{color:red}')
+        self.assertIsNone(self.apply({"slides": [{"id": "s-a", "html": page("s-a", "N")}]}, html=css, sent=runner.snapshot(css, ["s-a"]))[1])
+
+    def test_review_i4_inserts_keep_their_order(self):
+        out, why = self.apply({"insert": [{"after": "s-a", "html": page("s-1")}, {"after": "s-a", "html": page("s-2")}, {"after": "s-2", "html": page("s-3")}]})
+        self.assertIsNone(why)
+        self.assertEqual(self.ids(out), ["s-a", "s-1", "s-2", "s-3", "s-b"])
+
     def test_apply_unsent_page_is_not_a_conflict_but_an_error(self):
         out, why = self.apply({"slides": [{"id": "s-b", "html": page("s-b", "新")}]}, sent=runner.snapshot(self.html, ["s-a"]))
         self.assertIsNone(out)
@@ -330,6 +365,25 @@ class LlmTests(DeckCase):
         for p in self.deck.rglob("*"):
             if p.is_file():
                 self.assertNotIn(key.encode(), p.read_bytes(), p)
+
+    def test_review_i3_key_straddling_the_cut(self):
+        key = "sk-" + "a" * 48
+        ev = self.add("e1", slide_id="s-cover")
+        self.srv.queue.append((401, json.dumps({"error": "x" * 270 + " Bearer " + key})))
+        self.handle(ev, key=key)
+        self.assertNotIn("a" * 8, self.replies("e1")[0])
+
+    def test_review_m1_replace_retries_when_windows_holds_the_file(self):
+        real, n = os.replace, [0]
+        def flaky(a, b):
+            n[0] += 1
+            if n[0] <= 2:
+                raise PermissionError("in use")
+            real(a, b)
+        with mock.patch.object(runner.os, "replace", flaky):
+            runner.write_deck(self.deck, "<html>new</html>")
+        self.assertEqual((self.deck / "deck.html").read_text(encoding="utf-8"), "<html>new</html>")
+        self.assertFalse((self.deck / ".deck.runner.tmp").exists())
 
     def test_llm_unreachable(self):
         ev = self.add("e1", slide_id="s-cover")

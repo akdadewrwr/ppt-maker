@@ -1,6 +1,7 @@
 """ppt-maker runner: the agent session's job (wait -> handle -> reply) done by the user's own agent command or LLM API."""
-import argparse, base64, contextlib, json, os, re, signal, subprocess, sys, threading, urllib.error, urllib.request
+import argparse, base64, contextlib, json, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.request
 from collections import Counter
+from html.parser import HTMLParser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -9,43 +10,164 @@ import server
 REPO = Path(__file__).resolve().parent.parent
 
 CONFLICT = "你刚改了这页，我没覆盖，请再说一次"
-TAG = re.compile(r"<(/?)section\b[^>]*>", re.I)
-ID = re.compile(r"""(?<![\w-])id\s*=\s*["']([^"']+)["']""", re.I)
-THEME = re.compile(r"""<style\b[^>]*(?<![\w-])id\s*=\s*["']theme["'][^>]*>.*?</style\s*>""", re.I | re.S)
-FORBIDDEN = ((r"<script", "含脚本"), (r"<[^>]*\son[a-z]+\s*=", "含 on… 事件属性"), (r"javascript:", "含 javascript: 链接"),
-             (r"https?://", "引用了外部网址"), (r"@import", "含 @import"), (r"data:(?!image/)", "含非图片的 data: 链接"),
-             (r"data-ppt", "含 data-ppt 属性"), (r"""class\s*=\s*["'][^"']*(?<![\w-])ppt-""", "用了 ppt- 开头的 class"))
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+IMPLIED = {"p", "li", "dt", "dd", "tr", "td", "th", "thead", "tbody", "tfoot", "option", "optgroup", "colgroup", "caption", "rb", "rt", "rp"}
+BANNED = {"script", "iframe", "frame", "frameset", "object", "embed", "base", "meta", "link", "form", "noscript", "template", "portal",
+          "style", "textarea", "title", "xmp", "plaintext", "noembed", "noframes"}  # run code, reach out, or swallow the rest of the page
+URL_ATTRS = {"href", "src", "srcset", "action", "formaction", "poster", "background", "data", "cite", "longdesc", "ping", "xlink:href"}
+
+
+class Scan(HTMLParser):
+    """Tokenizes like a browser: comments, quoted values and entities can't fool it. tags = (kind, tag, attrs, start, end)."""
+
+    def __init__(self, html):
+        super().__init__(convert_charrefs=True)
+        self.html, self.tags, self.odd = html, [], False
+        self.lines = [0] + [m.end() for m in re.finditer("\n", html)]
+        self.feed(html)
+        self.rest = self.rawdata  # an unclosed comment, tag or <style> stays here
+
+    def _at(self):
+        line, col = self.getpos()
+        return self.lines[line - 1] + col
+
+    def _attrs(self, attrs):
+        a = {}
+        for k, v in attrs:
+            a.setdefault(k, v or "")  # the browser keeps the first of duplicated attributes
+        return a
+
+    def handle_starttag(self, tag, attrs):
+        s = self._at()
+        self.tags.append(("start", tag, self._attrs(attrs), s, s + len(self.get_starttag_text())))
+
+    def handle_startendtag(self, tag, attrs):
+        s = self._at()
+        self.tags.append(("startend", tag, self._attrs(attrs), s, s + len(self.get_starttag_text())))
+
+    def handle_endtag(self, tag):
+        s = self._at()
+        self.tags.append(("end", tag, {}, s, self.html.find(">", s) + 1))
+
+    def handle_decl(self, decl):
+        self.odd = True
+
+    def unknown_decl(self, data):
+        self.odd = True
+
+    def handle_pi(self, data):
+        self.odd = True
 
 
 def sections(html):
     """(id, start, end) of each top-level <section class="slide">, nested <section>s inside counted out."""
     out, depth, top = [], 0, None
-    for m in TAG.finditer(html):
-        if not m.group(1):
+    for kind, tag, a, s, e in Scan(html).tags:
+        if tag != "section" or kind == "startend":
+            continue
+        if kind == "start":
             if depth == 0:
-                tag = m.group(0)
-                cls = re.search(r"""class\s*=\s*["']([^"']*)["']""", tag, re.I)
-                i = ID.search(tag)
-                top = (i.group(1), m.start()) if cls and "slide" in cls.group(1).split() and i else None
+                top = (a["id"], s) if "slide" in a.get("class", "").split() and a.get("id") else None
             depth += 1
         elif depth:
             depth -= 1
             if depth == 0 and top:
-                out.append((top[0], top[1], m.end()))
+                out.append((top[0], top[1], e))
                 top = None
     return out
 
 
 def theme_span(html):
-    m = THEME.search(html)
-    return m.span() if m else None
+    tags = Scan(html).tags
+    for n, (kind, tag, a, s, e) in enumerate(tags):
+        if kind == "start" and tag == "style" and a.get("id") == "theme" and n + 1 < len(tags):
+            return s, tags[n + 1][4]  # <style> is raw text: the next tag is its </style>
+    return None
+
+
+def _norm(v):
+    return re.sub(r"[\x00-\x20]", "", v).lower()
+
+
+def bad_url(u):
+    n = _norm(u)
+    if n.startswith(("http:", "https:", "//", "\\\\", "/\\", "\\/")):
+        return "引用了外部网址"
+    if n.startswith("data:") and not n.startswith("data:image/"):
+        return "含非图片的 data: 链接"
+    return None
+
+
+def bad_css(css):
+    if "\\" in css:
+        return "CSS 里不能有反斜杠转义"
+    n = _norm(css)
+    if "@import" in n or "expression(" in n:
+        return "CSS 含 @import"
+    for u in re.findall(r"""url\(\s*['"]?([^'")]*)|['"]([^'"]*)['"]""", css, re.I):
+        why = bad_url(u[0] or u[1])
+        if why:
+            return why
+    return None
+
+
+def bad_attrs(a):
+    for k, v in a.items():
+        if k.startswith("on"):
+            return "含 on… 事件属性"
+        if k == "srcdoc" or k.startswith("data-ppt"):
+            return f"含 {k} 属性"
+        if k == "class" and any(c.startswith("ppt-") for c in v.split()):
+            return "用了 ppt- 开头的 class"
+        n = _norm(v)
+        if "javascript:" in n or "vbscript:" in n:
+            return "含 javascript: 链接"
+        if k in URL_ATTRS or k.endswith(":href"):
+            for u in (v.split(",") if k == "srcset" else [v]):
+                why = bad_url(u.strip().split(" ")[0])
+                if why:
+                    return why
+        if k == "style":
+            why = bad_css(v)
+            if why:
+                return why
+    return None
 
 
 def bad_content(fragment):
-    for pat, why in FORBIDDEN:
-        if re.search(pat, fragment, re.I):
+    """Why this page HTML must not go into the deck, or None. Also refuses anything that would swallow the pages after it."""
+    sc = Scan(fragment)
+    if sc.rest.strip() or sc.odd:
+        return "页面 HTML 不完整（有没闭合的注释、标签或 <! 声明）"
+    stack = []
+    for kind, tag, a, s, e in sc.tags:
+        if tag in BANNED:
+            return f"含 <{tag}>（脚本、外部内容或会吞掉后面页面的标签）"
+        why = bad_attrs(a)
+        if why:
             return why
+        if kind == "start" and tag not in VOID:
+            stack.append(tag)
+        elif kind == "end":
+            if tag not in stack:
+                return f"多了一个 </{tag}>"
+            while stack[-1] != tag:
+                if stack.pop() not in IMPLIED:
+                    return "有没闭合的标签"
+            stack.pop()
+    if any(t not in IMPLIED for t in stack):
+        return "有没闭合的标签"
     return None
+
+
+def bad_theme(t):
+    sc = Scan(t)
+    tags = sc.tags
+    if (sc.rest or sc.odd or len(tags) != 2 or tags[0][:2] != ("start", "style") or tags[0][2].get("id") != "theme"
+            or tags[1][:2] != ("end", "style") or tags[0][3] != 0 or tags[1][4] != len(t)):
+        return "主题必须恰好是一个 <style id=\"theme\">…</style>"
+    why = bad_css(t[tags[0][4]:tags[1][3]])
+    return f"主题{why}" if why else None
 
 
 def snapshot(html, ids):
@@ -79,7 +201,8 @@ def apply_changes(html, resp, sent):
             and isinstance(dele, list) and all(isinstance(x, str) for x in dele) and (theme is None or isinstance(theme, str))):
         return None, "返回的 JSON 格式不对"
     cur = {i: html[s:e] for i, s, e in sections(html)}
-    for sid in [x["id"] for x in slides] + dele + [x["after"] for x in ins if x.get("after")]:
+    new_ids = {sp[0][0] for sp in (sections(x["html"].strip()) for x in ins) if len(sp) == 1}
+    for sid in [x["id"] for x in slides] + dele + [x["after"] for x in ins if x.get("after") and x["after"] not in new_ids]:
         if sid not in sent:
             return None, f"没有 {sid} 这一页" if sid not in cur else f"{sid} 这一页没发给模型，不能改"
         if cur.get(sid) != sent[sid]:
@@ -90,11 +213,9 @@ def apply_changes(html, resp, sent):
             return None, "这份稿子没有 <style id=\"theme\">，不能改主题"
         if html[t[0]:t[1]] != sent.get("#theme"):
             return None, CONFLICT
-        t = theme.strip()
-        if not THEME.fullmatch(t) or len(re.findall(r"<style\b", t, re.I)) != 1:
-            return None, "主题必须恰好是一个 <style id=\"theme\">…</style>"
-        if bad_content(t):
-            return None, f"主题{bad_content(t)}"
+        why = bad_theme(theme.strip())
+        if why:
+            return None, why
     for x in slides:
         h, why = _one_section(x["html"], x["id"])
         if why or h is None:
@@ -106,22 +227,22 @@ def apply_changes(html, resp, sent):
         html = html[:s] + html[e:].removeprefix("\n")
     if not sections(html):
         return None, "不能删掉所有页面"
+    last = {}  # several pages inserted after one page keep the order they were given in
     for x in ins:
         h, why = _one_section(x["html"], None)
         if why or h is None:
             return None, why or "返回的页面不对"
-        if x.get("after") is None:
-            at = sections(html)[-1][2]
-        else:
-            sp = _span(html, x["after"])
-            if not sp:
-                return None, f"要插在 {x['after']} 之后，但这一页已删除"
-            at = sp[1]
-        html = html[:at] + "\n" + h + html[at:]
+        after = x.get("after")
+        sp = sections(html)[-1][1:] if after is None else _span(html, last.get(after, after))
+        if not sp:
+            return None, f"要插在 {after} 之后，但这一页已删除"
+        html = html[:sp[1]] + "\n" + h + html[sp[1]:]
+        last[after] = sections(h)[0][0]
     if theme is not None:
         s, e = theme_span(html)
         html = html[:s] + theme.strip() + html[e:]
-    dup = [i for i, n in Counter(ID.findall(html)).items() if n > 1]
+    ids = Counter(a["id"] for kind, tag, a, s, e in Scan(html).tags if kind != "end" and a.get("id"))
+    dup = [i for i, n in ids.items() if n > 1]
     if dup:
         return None, f"id 重复：{', '.join(dup[:5])}"
     return html, None
@@ -252,8 +373,8 @@ def chat(base_url, key, model, messages, timeout):
             if e.code == 400 and "response_format" in body:  # some servers don't take json mode: once more without it
                 body.pop("response_format")
                 continue
-            detail = e.read()[:300].decode("utf-8", "replace")
-            raise RuntimeError(scrub(f"接口返回 {e.code}：{detail}", key)) from None
+            detail = scrub(e.read(65536).decode("utf-8", "replace"), key)[:300]  # scrub before cutting: a cut key no longer matches
+            raise RuntimeError(f"接口返回 {e.code}：{detail}") from None
         except (urllib.error.URLError, OSError) as e:
             raise RuntimeError(scrub(f"连不上接口：{e}", key)) from None
         except (KeyError, IndexError, TypeError, ValueError):
@@ -334,7 +455,14 @@ def write_deck(deck, html):
     f = Path(deck) / "deck.html"
     tmp = f.with_name(".deck.runner.tmp")
     tmp.write_bytes(html.encode("utf-8"))
-    os.replace(tmp, f)  # atomic: the page and the watcher never see half a file
+    for n in range(6):  # atomic: the page and the watcher never see half a file
+        try:
+            return os.replace(tmp, f)
+        except PermissionError:  # Windows: the server is reading deck.html this very moment
+            if n == 5:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
 
 
 def llm_handle(deck, base_url, key, model, timeout, name):

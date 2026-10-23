@@ -25,7 +25,7 @@
  "theme": "<style id=\"theme\">…</style>"}
 ```
 - `slides`：要改的页，给出改完后整页的 HTML，`id` 不变。只能改发给你的页面。
-- `insert`：新加的页，`after` 是插在哪一页之后，`null` 表示加在最后。
+- `insert`：新加的页，`after` 是插在哪一页之后，`null` 表示加在最后。几页插在同一页之后时按数组顺序排列；`after` 也可以是本次刚插入的页。
 - `delete`：要删的页。
 - `theme`：整体换风格时才给，给出完整的新 `<style id="theme">`；不换就省略。
 - 只返回改动的部分，没用到的字段省略。看不懂就不改页面，在 reply 里问一个具体问题。
@@ -37,7 +37,7 @@
 3. 定位只用 `style="grid-area:起始行/起始列/结束行/结束列"`，网格 16 列 × 9 行（画布 1280×720，每格 80px，结束线最大为行 10 / 列 17）。块内细分用 `class="block grid"` 并写 `grid-template-columns`/`grid-template-rows`。
 4. 你自己生成内容时，颜色和字体优先用 `#theme` 里的 CSS 变量；整体换风格只改 `#theme`。用户在页面上选的颜色是固定色值（如 `#ef4444`），保留它们，不要改成变量。
 5. 文字必须是真文字；表格用 `<table>`；插图用内联 SVG 或 `assets/` 下已有的图片。
-6. 单文件离线：不引用外部网络资源（字体、脚本、图片都不行），不写 `<script>`、`on…` 事件属性、`javascript:` 链接、`@import`。
+6. 单文件离线：不引用外部网络资源（字体、脚本、图片都不行），不写 `<script>`、`<style>`、`<iframe>`、`on…` 事件属性、`javascript:` 链接、`@import`、CSS 反斜杠转义；页面里的样式只写在 `style` 属性上。每个标签都要闭合，不留没写完的注释。
 7. 不要写入任何 `data-ppt` 属性或 `ppt-` 开头的 class（编辑层专用）。
 8. 块的 `style` 只写这些属性：`grid-area, background, border, border-radius, box-shadow, text-align, color, font-size, font-weight, font-style, text-decoration, opacity`；块内文字格式只用 `<b> <i> <u>` 和 `<span style="color:…">` / `<span style="font-size:…px">`，不用 `<font>`。
 9. 浮动对象（形状、箭头、图标、图片）：`<div class="obj" id="o-…" data-kind="shape|arrow|icon|image" style="left:…px;top:…px;width:…px;height:…px">`，放在所属页内所有块之后，DOM 顺序即上下层级。坐标是画布像素；旋转只写 `transform:rotate(…deg)`。对象 style 只写：`left, top, width, height, transform, fill, stroke, stroke-width, color, opacity, border, border-radius, box-shadow`。

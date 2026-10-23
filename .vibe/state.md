@@ -1,9 +1,10 @@
 ## 上一轮完成
-- 分支 fix/flaky-export-e2e：改稳导出 e2e，两遍 e2e 均 198/198，已推送，等用户同意合并
+- fix/flaky-export-e2e 已快进合并 main 并推送，分支本地+远端已删
+- main 上：server 158/158、selftest 99/99、e2e 198/198
 
 ## 关键结论
-- 偶发失败的原因：导出完成提示只存在 ≤1 秒（下一次 poll 会执行推迟的刷新并清掉它），测试每 300ms 才看一眼，机器慢时会错过；代码本身没问题
-- 修法：页面用 MutationObserver 把"看到导出完成"记进 sessionStorage（刷新后还在）；改稿前先等按钮变成"导出中…"；等到新页面带上改动后再读记录
+- 导出 e2e 偶发失败已改稳：用 sessionStorage 记录"导出完成"提示，不再赌 1 秒窗口
+- Claude 用 --install-claude + `/ppt`，Codex 用 --install-codex + `$ppt`；使用指南在 docs/guide.html
 
 ## 改动文件
 - tests/e2e.mjs
@@ -12,4 +13,5 @@
 - 无
 
 ## 下一步
-- 用户同意后合并 main、推送、删分支
+- 等用户新需求
+- 可选：4 个延后 minor（游标损坏回退 0、Claude 入口缺 PDF 提示、每次轮询全量读 inbox/outbox、--install-codex 覆盖无提示）

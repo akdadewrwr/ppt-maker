@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ppt-maker 使用指南</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --fg:#1f2328; --muted:#636c76; --line:#e3e3e0; --accent:#2563eb; --code:#f0f0ee;
+          --done:#16a34a; --busy:#2563eb; --wait:#f59e0b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg:#16181b; --card:#1f2226; --fg:#e6e6e3; --muted:#9aa0a6; --line:#33373c; --accent:#60a5fa; --code:#2a2e33; } }
+  :root[data-theme="dark"] { --bg:#16181b; --card:#1f2226; --fg:#e6e6e3; --muted:#9aa0a6; --line:#33373c; --accent:#60a5fa; --code:#2a2e33; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.7 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 36px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .lead { color: var(--muted); margin: 0 0 8px; }
+  code, kbd { font: 13px/1.5 ui-monospace, Consolas, monospace; background: var(--code); padding: 1px 6px; border-radius: 4px; }
+  kbd { border: 1px solid var(--line); }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; font: 13px/1.6 ui-monospace, Consolas, monospace; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 640px) { .two { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 8px; font-size: 16px; }
+  .card ol, .card ul { margin: 0; padding-left: 20px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 2px solid; margin-right: 6px; vertical-align: -1px; }
+  .note { border-left: 3px solid var(--accent); padding: 6px 12px; background: var(--card); border-radius: 0 8px 8px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ppt-maker 使用指南</h1>
+  <p class="lead">在浏览器里点一点、写一句"想怎么改"，由 Claude Code 或 Codex 帮你改幻灯片，最后导出成可编辑的 PPTX。</p>
+
+  <h2>1. 准备</h2>
+  <ul>
+    <li>装好 Python 3 和一个浏览器（Chrome / Edge）。</li>
+    <li>装好 <b>Claude Code</b> 或 <b>Codex CLI</b>，任选其一，或两个都装。</li>
+    <li>幻灯片存在你打开 agent 的目录下：<code>decks/&lt;名字&gt;/deck.html</code>。</li>
+  </ul>
+
+  <h2>2. 启动</h2>
+  <div class="two">
+    <div class="card">
+      <h3>用 Claude Code</h3>
+      <ol>
+        <li>第一次用之前，先运行一次：<br><code>python ppt/server.py --install-claude</code><br>之后在任意目录都能用 <code>/ppt</code>。</li>
+        <li>在终端打开 Claude Code。</li>
+        <li>输入 <code>/ppt 我的演讲</code>。</li>
+        <li>浏览器会自动打开幻灯片。这份稿子是新的话，Claude 会先写一份 3–6 页的初稿。</li>
+        <li>之后你在浏览器里的每个操作都会自动送到 Claude，在终端里也可以直接跟它说话。</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>用 Codex</h3>
+      <ol>
+        <li>第一次用之前，先运行一次：<br><code>python ppt/server.py --install-codex</code><br>然后把它打印出来的设置加进 <code>~/.codex/config.toml</code>，再重开 Codex。</li>
+        <li>输入 <code>$ppt 我的演讲</code>（Codex 的技能以 <code>$</code> 开头）。</li>
+        <li>Codex 会一直等着浏览器里的操作。想跟它说话就按 <kbd>Esc</kbd>，说完让它"继续"。</li>
+        <li>15 分钟没有操作它会自动停止监听，说"继续"就会恢复。</li>
+      </ol>
+    </div>
+  </div>
+  <p class="note">同一份稿子一次只开一边（Claude 或 Codex），不然两边可能都去处理同一个操作。页面右上角会显示当前是谁在线。</p>
+
+  <h2>3. 在浏览器里怎么改</h2>
+  <table>
+    <tr><th>想做什么</th><th>怎么做</th></tr>
+    <tr><td>改某一块</td><td>点一下这一块，按 <kbd>Enter</kbd> 或点 <b>💬 问 Claude</b>，写下想怎么改，再按 <kbd>Enter</kbd> 发送。</td></tr>
+    <tr><td>改一片区域 / 在空白处加东西</td><td>在页面上拖出一个框，写下想要什么。</td></tr>
+    <tr><td>只改一句话</td><td>双击文字进入编辑，选中那句话后右键，写下怎么改。只有这句会被改动。</td></tr>
+    <tr><td>自己动手改</td><td>双击改字；拖动挪位置；用工具栏改颜色、字号、加粗。<kbd>Delete</kbd> 删除，<b>↶ / ↷</b> 撤销和重做。</td></tr>
+    <tr><td>画个草图让它照着做</td><td>点 <b>✎ 草图</b> 在当前页上画，或点 <b>+草图页</b> 新建一页来画。可以加文字标注。</td></tr>
+    <tr><td>攒一批再一起发</td><td>写意图时按 <kbd>Ctrl</kbd>+<kbd>Enter</kbd> 加入清单。攒好后点 <b>📝 清单</b>，写一句总体说明，一次发出。</td></tr>
+    <tr><td>给它参考资料</td><td>点 <b>📚 知识库</b>，放进 PDF、图片、网址或旧稿子。改稿时它会参考这些资料。</td></tr>
+    <tr><td>沿用以前的稿子</td><td>点 <b>导入</b>，选 .pptx / .html / .zip，或者贴一个网址。</td></tr>
+    <tr><td>交付</td><td>点 <b>导出 PPT</b>，得到能在 PowerPoint 里继续编辑的 .pptx。</td></tr>
+  </table>
+
+  <h2>4. 页面上的框是什么意思</h2>
+  <table>
+    <tr><td><span class="dot" style="border-color:#7c3aed;border-style:dashed"></span>紫色虚线框</td><td>已放进清单，还没发出。</td></tr>
+    <tr><td><span class="dot" style="border-color:var(--wait)"></span>橙框</td><td>已发出，正在排队。</td></tr>
+    <tr><td><span class="dot" style="border-color:var(--busy)"></span>蓝框</td><td>agent 正在处理。</td></tr>
+    <tr><td><span class="dot" style="border-color:var(--done)"></span>绿框</td><td>改完了，旁边的气泡里是它的说明。点气泡上的 × 关掉一个；点顶栏的 <b>✓ 清除标记</b> 一次关掉全部绿框。</td></tr>
+  </table>
+  <p>agent 有问题要问你时，会在气泡里提问，直接在气泡里回答就行。</p>
+
+  <h2>5. 常见问题</h2>
+  <table>
+    <tr><th>现象</th><th>怎么办</th></tr>
+    <tr><td>页面显示 agent 离线</td><td>Claude：在终端里让它重新监听。Codex：对它说"继续"。</td></tr>
+    <tr><td>Codex 报 <code>blocked by policy</code></td><td><code>config.toml</code> 里没加 <code>[windows] sandbox = "unelevated"</code>。加上后重开 Codex。</td></tr>
+    <tr><td>Codex 抓不到网页，或写不进全局知识库</td><td>按第 2 步，把 <code>network_access</code> 和 <code>writable_roots</code> 两项也加进 <code>config.toml</code>。</td></tr>
+    <tr><td>改坏了</td><td>点 <b>↶</b> 撤销。撤销 agent 的修改后，它不会自己再改回去。</td></tr>
+    <tr><td>想关掉</td><td>跟 agent 说"关掉 ppt"就行。稿子保存在 <code>decks/&lt;名字&gt;/</code>，下次用同一个名字打开会接着改。</td></tr>
+  </table>
+</main>
+</body>
+</html>

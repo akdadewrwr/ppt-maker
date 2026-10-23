@@ -949,6 +949,17 @@ def install_codex(home):
     return dst
 
 
+def install_claude(home):
+    """Write the global /ppt command to <home>/.claude/commands/ppt.md with this checkout's path filled in."""
+    repo = Path(__file__).resolve().parent.parent
+    dst = Path(home) / ".claude" / "commands" / "ppt.md"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    text = (repo / "claude" / "commands" / "ppt.md").read_text(encoding="utf-8")
+    dst.write_text(text.replace("{{PPT_HOME}}", repo.as_posix()), encoding="utf-8")
+    (Path(home) / ".ppt-maker").mkdir(exist_ok=True)
+    return dst
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="ppt-maker local server")
     ap.add_argument("deck", nargs="?")
@@ -970,6 +981,7 @@ def main(argv=None):
     ap.add_argument("--stop", action="store_true", help="stop this deck's server")
     ap.add_argument("--export", action="store_true", help="export this deck to .pptx from the terminal")
     ap.add_argument("--install-codex", action="store_true", help="install the $ppt skill for Codex CLI")
+    ap.add_argument("--install-claude", action="store_true", help="install the global /ppt command for Claude Code")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -978,6 +990,9 @@ def main(argv=None):
         print(f"已安装 Codex skill：{d}\n在 Codex 里输入 $ppt <名字> 使用。")
         print("请在 ~/.codex/config.toml 加上（Windows 上运行命令需要第一段；网页资料和全局知识库需要第二段）：\n")
         print(CODEX_CONFIG.format(home=Path.home().as_posix()))
+        return
+    if a.install_claude:
+        print(f"已安装 Claude Code 命令：{install_claude(Path.home())}\n在任意目录打开 Claude Code，输入 /ppt <名字> 使用。")
         return
     if not a.deck:
         ap.error("deck is required")

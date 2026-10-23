@@ -583,6 +583,23 @@ class PromptTests(unittest.TestCase):  # one set of rules for every agent, an en
         finally:
             shutil.rmtree(home, ignore_errors=True)
 
+    def test_install_claude_cli(self):
+        home = Path(tempfile.mkdtemp())
+        try:
+            out = io.StringIO()
+            with mock.patch.object(Path, "home", return_value=home), contextlib.redirect_stdout(out):
+                server.main(["--install-claude"])
+            self.assertIn("/ppt", out.getvalue())
+            text = (home / ".claude" / "commands" / "ppt.md").read_text(encoding="utf-8")
+            self.assertNotIn("{{PPT_HOME}}", text)
+            self.assertIn(self.ROOT.as_posix() + "/.claude/commands/ppt.md", text)  # the global entry defers to the repo's
+            self.assertIn(self.ROOT.as_posix() + "/ppt/server.py", text)
+            self.assertTrue((home / ".ppt-maker").is_dir())
+            with mock.patch.object(Path, "home", return_value=home), contextlib.redirect_stdout(out):
+                server.main(["--install-claude"])  # again: replaces, no error
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
 
 PNG_1PX = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"

@@ -68,6 +68,33 @@
   </div>
   <p class="note">同一份稿子一次只开一边（Claude 或 Codex），不然两边可能都去处理同一个操作。页面右上角会显示当前是谁在线。</p>
 
+  <h2>2b. 用自己的 API（不开 Claude / Codex）</h2>
+  <p>先设置 API key（只从环境变量读，不会写进稿子）：PowerShell <code>$env:PPT_API_KEY="你的key"</code>；bash <code>export PPT_API_KEY=你的key</code>。然后运行一条命令，浏览器会自动打开：</p>
+  <div class="two">
+    <div class="card">
+      <h3>只有对话接口的模型</h3>
+      <pre>python ppt/runner.py "decks/我的演讲" --backend llm \
+  --base-url https://api.deepseek.com/v1 \
+  --model deepseek-chat</pre>
+      <ul>
+        <li>任何 OpenAI 兼容接口都行：OpenAI、DeepSeek、通义、Ollama、vLLM……</li>
+        <li>能看图的模型才看得懂截图和草图。</li>
+        <li>暂不支持：知识库、导入。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>会自己用工具的 agent</h3>
+      <pre>python ppt/runner.py "decks/我的演讲" --backend agent \
+  --cmd "你的 agent 命令"</pre>
+      <ul>
+        <li>每来一批操作就运行一次这条命令，说明从 stdin 传入；命令里的 <code>{prompt}</code>、<code>{deck}</code> 会换成说明文件和稿子的路径。</li>
+        <li>agent 要能读写文件、运行命令，并在处理完后自己回执。</li>
+        <li>远程 agent 服务：写个小脚本包一层，当作这条命令。</li>
+      </ul>
+    </div>
+  </div>
+  <p>按 <kbd>Ctrl</kbd>+<kbd>C</kbd> 退出。<code>--name</code> 改页面上显示的名字，<code>--timeout</code> 改每次的等待上限。同样，一份稿子一次只开一边。</p>
+
   <h2>3. 在浏览器里怎么改</h2>
   <table>
     <tr><th>想做什么</th><th>怎么做</th></tr>

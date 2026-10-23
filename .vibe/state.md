@@ -1,6 +1,7 @@
 ## 上一轮完成
 - 在 feat/api-runner 上修完 review 的 8 个 minor（各自先红后绿），已推送到 GitHub 的 feat/api-runner；未合并 main（用户要求先不合并）
 - 新增 docs/api-runner.md：两种后端的用法、接口要求、返回 JSON 格式、校验规则、agent 接入约定与示例、参数表；guide 2b 节加了链接
+- 新增 README.md（项目简介、需要、三种快速开始、文档、目录、测试）
 - runner 49/49、server 158/158；agent 后端命令行冒烟再次通过
 
 ## 关键结论
@@ -11,7 +12,7 @@
 - llm 后端读写 deck.html 改为按原始字节，CRLF 稿子不被改换行
 
 ## 改动文件
-- ppt/runner.py、ppt/test_runner.py、docs/superpowers/specs/2026-10-22-ppt-maker-api-runner-design.md、docs/api-runner.md（新）、docs/guide.html
+- ppt/runner.py、ppt/test_runner.py、docs/superpowers/specs/2026-10-22-ppt-maker-api-runner-design.md、docs/api-runner.md（新）、README.md（新）、docs/guide.html
 
 ## 当前 blocker
 - llm 后端只对假接口测过，还没用真实 API key 跑过

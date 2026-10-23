@@ -1,4 +1,5 @@
-import contextlib, io, os, shutil, sys, tempfile, unittest
+import base64, contextlib, io, json, os, shutil, sys, tempfile, threading, unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -210,6 +211,159 @@ class RunnerTests(DeckCase):
     def test_main_agent_requires_cmd(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             runner.main([str(self.deck), "--backend", "agent"])
+
+
+class FakeLLM(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.reqs.append({"auth": self.headers.get("Authorization"), "path": self.path, "body": body})
+        status, out = self.server.queue.pop(0)
+        if callable(out):
+            status, out = 200, out()
+        data = out.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):
+        pass
+
+
+def said(resp):
+    return json.dumps({"choices": [{"message": {"content": json.dumps(resp, ensure_ascii=False)}}]}, ensure_ascii=False)
+
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII=")
+
+
+class LlmTests(DeckCase):
+    def setUp(self):
+        super().setUp()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeLLM)
+        self.srv.reqs, self.srv.queue = [], []
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        super().tearDown()
+
+    def handle(self, *evs, key="k"):
+        runner.llm_handle(self.deck, self.url, key, "m", 10, "M")(list(evs), [])
+
+    def html(self):
+        return (self.deck / "deck.html").read_text(encoding="utf-8")
+
+    def cover(self, text):
+        return {"id": "s-cover", "html": f'<section class="slide" id="s-cover"><div class="block" id="b-new" style="grid-area:1/1/3/17">{text}</div></section>'}
+
+    def test_llm_edits_page(self):
+        (server.runtime(self.deck) / "shots").mkdir(exist_ok=True)
+        (server.runtime(self.deck) / "shots" / "e1.png").write_bytes(PNG)
+        ev = self.add("e1", slide_id="s-cover", blocks=["b-title"], shot=".ppt/shots/e1.png")
+        self.srv.queue.append((200, said({"reply": "改好了", "slides": [self.cover("新标题")]})))
+        self.handle(ev)
+        self.assertIn("新标题", self.html())
+        self.assertEqual(self.replies("e1"), ["改好了"])
+        r = self.srv.reqs[0]
+        self.assertEqual((r["auth"], r["path"], r["body"]["model"]), ("Bearer k", "/v1/chat/completions", "m"))
+        self.assertEqual(r["body"]["response_format"], {"type": "json_object"})
+        parts = r["body"]["messages"][1]["content"]
+        self.assertTrue(any(p["type"] == "image_url" and p["image_url"]["url"].startswith("data:image/png;base64,") for p in parts))
+        text = "".join(p.get("text", "") for p in parts)
+        self.assertIn('id="s-cover"', text)
+        self.assertIn('<style id="theme">', text)
+        self.assertNotIn(".ppt/shots", text)
+
+    def test_llm_retries_without_response_format_on_400(self):
+        ev = self.add("e1", slide_id="s-cover")
+        self.srv.queue += [(400, '{"error":"response_format unsupported"}'), (200, said({"reply": "好"}))]
+        self.handle(ev)
+        self.assertEqual(self.replies("e1"), ["好"])
+        self.assertNotIn("response_format", self.srv.reqs[1]["body"])
+
+    def test_llm_bad_json_replies_and_keeps_deck(self):
+        before = self.html()
+        ev = self.add("e1", slide_id="s-cover")
+        self.srv.queue.append((200, json.dumps({"choices": [{"message": {"content": "不是 JSON"}}]})))
+        self.handle(ev)
+        self.assertEqual(self.html(), before)
+        self.assertTrue(self.replies("e1")[0].startswith("没改成"))
+
+    def test_llm_rejected_change_keeps_deck(self):
+        before = self.html()
+        ev = self.add("e1", slide_id="s-cover")
+        self.srv.queue.append((200, said({"reply": "好", "slides": [self.cover("<script>x</script>")]})))
+        self.handle(ev)
+        self.assertEqual(self.html(), before)
+        self.assertIn("脚本", self.replies("e1")[0])
+
+    def test_llm_conflict(self):
+        ev = self.add("e1", slide_id="s-cover")
+        f = self.deck / "deck.html"
+        def user_edits_meanwhile():
+            f.write_text(self.html().replace("</section>", "<p>用户手改</p></section>", 1), encoding="utf-8")
+            return said({"reply": "好", "slides": [self.cover("模型的")]})
+        self.srv.queue.append((200, user_edits_meanwhile))
+        self.handle(ev)
+        self.assertIn("用户手改", self.html())
+        self.assertNotIn("模型的", self.html())
+        self.assertEqual(self.replies("e1"), [runner.CONFLICT])
+
+    def test_llm_unsupported_kb_and_import(self):
+        evs = [self.add("e1", "kb", kind="digest"), self.add("e2", "import", kind="file"), self.add("e3", slide_id="s-cover", kb=["k1"])]
+        self.handle(*evs)
+        self.assertEqual(self.srv.reqs, [])
+        for e in ("e1", "e2", "e3"):
+            self.assertEqual(self.replies(e), [runner.UNSUPPORTED])
+
+    def test_llm_error_never_leaks_key(self):
+        key = "sk-secret-123456"
+        ev = self.add("e1", slide_id="s-cover")
+        self.srv.queue.append((401, json.dumps({"error": f"bad key {key}"})))
+        self.handle(ev, key=key)
+        self.assertTrue(self.replies("e1")[0].startswith("没改成"))
+        self.assertIn("401", self.replies("e1")[0])
+        for p in self.deck.rglob("*"):
+            if p.is_file():
+                self.assertNotIn(key.encode(), p.read_bytes(), p)
+
+    def test_llm_unreachable(self):
+        ev = self.add("e1", slide_id="s-cover")
+        runner.llm_handle(self.deck, "http://127.0.0.1:1/v1", "k", "m", 5, "M")([ev], [])
+        self.assertTrue(self.replies("e1")[0].startswith("没改成"))
+
+    def test_llm_too_big(self):
+        f = self.deck / "deck.html"
+        f.write_text(self.html().replace("</section>", "<p>" + "字" * 200001 + "</p></section>", 1), encoding="utf-8")
+        ev = self.add("e1", slide_id="s-cover")
+        self.handle(ev)
+        self.assertEqual(self.srv.reqs, [])
+        self.assertEqual(self.replies("e1"), [runner.TOO_BIG])
+
+    def test_llm_insert_and_answer_context(self):
+        first = self.add("e1", slide_id="s-cover", text="加一页")
+        server.reply(self.deck, "e1", "要讲什么？")
+        ans = self.add("e2", "answer", re="e1", text="讲预算")
+        self.srv.queue.append((200, said({"reply": "加了", "insert": [{"after": "s-cover", "html": '<section class="slide" id="s-budget"></section>'}]})))
+        self.handle(ans)
+        self.assertEqual([i for i, _, _ in runner.sections(self.html())], ["s-cover", "s-budget"])
+        text = "".join(p.get("text", "") for p in self.srv.reqs[0]["body"]["messages"][1]["content"])
+        self.assertIn("加一页", text)
+        self.assertIn("要讲什么？", text)
+
+    def test_pages_for(self):
+        html = deck(("s-a", '<div class="block" id="b-1"></div>'), ("s-b", '<div class="block" id="b-2"></div>'))
+        by = {"e1": {"id": "e1", "type": "intent", "slide_id": "s-b"}}
+        self.assertEqual(runner.pages_for({"type": "intent", "slide_id": "s-a"}, by, html), ["s-a"])
+        self.assertEqual(runner.pages_for({"type": "intent", "kind": "batch", "items": [{"slide_id": "s-b"}, {"slide_id": "s-a"}, {"slide_id": "s-b"}]}, by, html), ["s-b", "s-a"])
+        self.assertEqual(runner.pages_for({"type": "answer", "re": "e1"}, by, html), ["s-b"])
+        self.assertEqual(runner.pages_for({"type": "lint", "issues": [{"block": "b-2", "kind": "overflow"}]}, by, html), ["s-b"])
+        self.assertIsNone(runner.pages_for({"type": "intent"}, by, html))
+        self.assertIsNone(runner.pages_for({"type": "intent", "slide_id": "s-gone"}, by, html))
 
 
 def _time():

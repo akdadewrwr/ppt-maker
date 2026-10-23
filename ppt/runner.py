@@ -1,5 +1,5 @@
 """ppt-maker runner: the agent session's job (wait -> handle -> reply) done by the user's own agent command or LLM API."""
-import argparse, contextlib, os, re, signal, subprocess, sys, threading
+import argparse, base64, contextlib, json, os, re, signal, subprocess, sys, threading, urllib.error, urllib.request
 from collections import Counter
 from pathlib import Path
 
@@ -224,6 +224,149 @@ def agent_handle(deck, cmd, timeout, name):
         if out.strip():
             print(out.strip()[-2000:], flush=True)
         finish(deck, evs, f"{name} 没有回执这条（退出码 {code}）：{err.strip()[-300:]}")
+    return handle
+
+
+# ---- llm backend ----
+UNSUPPORTED = "API 模式暂不支持这类操作（知识库 / 导入），请用 Claude / Codex 或 agent 后端"
+TOO_BIG = "这份稿子太大，API 模式处理不了，请指定一页再说"
+MAX_PAGES = 200_000
+
+
+def scrub(s, key):
+    return s.replace(key, "***") if key else s
+
+
+def chat(base_url, key, model, messages, timeout):
+    """One OpenAI-compatible chat completion -> the reply text. Errors are RuntimeError with a short reason, never the key."""
+    url = base_url.rstrip("/") + "/chat/completions"
+    body = {"model": model, "messages": messages, "response_format": {"type": "json_object"}}
+    while True:
+        req = urllib.request.Request(url, json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                                     {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            return data["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            if e.code == 400 and "response_format" in body:  # some servers don't take json mode: once more without it
+                body.pop("response_format")
+                continue
+            detail = e.read()[:300].decode("utf-8", "replace")
+            raise RuntimeError(scrub(f"接口返回 {e.code}：{detail}", key)) from None
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(scrub(f"连不上接口：{e}", key)) from None
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise RuntimeError("接口返回的内容看不懂") from None
+
+
+def pages_for(ev, by_id, html):
+    """The slide ids an event is about, or None (= send every page)."""
+    have = {i for i, _, _ in sections(html)}
+    if ev.get("type") == "answer":
+        orig = by_id.get(ev.get("re"))
+        return pages_for(orig, by_id, html) if orig and orig is not ev else None
+    if ev.get("items"):
+        ids = [it.get("slide_id") for it in ev["items"]]
+    elif ev.get("type") == "lint":
+        spans = sections(html)
+        ids = []
+        for iss in ev.get("issues") or []:
+            m = re.search(rf"""(?<![\w-])id\s*=\s*["']{re.escape(str(iss.get("block", "")))}["']""", html)
+            ids += [i for i, s, e in spans if m and s <= m.start() < e]
+    else:
+        ids = [ev.get("slide_id")]
+    ids = list(dict.fromkeys(i for i in ids if i in have))
+    return ids or None
+
+
+def _image(deck, rel):
+    try:
+        p = (Path(deck) / rel).resolve()
+        if Path(deck).resolve() not in p.parents:
+            return None
+        return {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(p.read_bytes()).decode()}}
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def build_messages(deck, ev, by_id, html):
+    ids = pages_for(ev, by_id, html)
+    spans = sections(html)
+    pick = [html[s:e] for i, s, e in spans if ids is None or i in ids]
+    if sum(map(len, pick)) > MAX_PAGES:
+        raise ValueError(TOO_BIG)
+    sent = snapshot(html, [i for i, _, _ in spans if ids is None or i in ids])
+    clean = lambda e: {k: ([{kk: vv for kk, vv in it.items() if kk != "shot"} for it in v] if k == "items" else v)
+                       for k, v in e.items() if k not in ("shot", "ts")}
+    text = ["操作：" + json.dumps(clean(ev), ensure_ascii=False)]
+    if ev.get("type") == "answer" and by_id.get(ev.get("re")):
+        said = [r.get("text", "") for r in server.outbox_rows(deck) if r.get("re") == ev["re"] and not r.get("ack")]
+        text.append("原来的意图：" + json.dumps(clean(by_id[ev["re"]]), ensure_ascii=False))
+        text.append("你之前的回执：" + (said[-1] if said else "（无）"))
+    text.append("主题：\n" + sent.get("#theme", "（没有 #theme）"))
+    text.append("全部页面 id（按顺序）：" + ", ".join(i for i, _, _ in spans))
+    text.append("相关页面：\n" + "\n".join(pick))
+    parts = [{"type": "text", "text": "\n\n".join(text)}]
+    shots = [ev.get("shot")] + [it.get("shot") for it in ev.get("items") or []]
+    parts += [img for img in (_image(deck, s) for s in shots if s) if img]
+    system = (REPO / "prompts" / "ppt-llm.md").read_text(encoding="utf-8")
+    return [{"role": "system", "content": system}, {"role": "user", "content": parts}], sent
+
+
+def _unsupported(ev):
+    return ev.get("type") in ("kb", "import") or bool(ev.get("kb"))
+
+
+def _parse(content):
+    s = content.strip()
+    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s)  # some models wrap it anyway
+    try:
+        resp = json.loads(s)
+    except ValueError:
+        raise ValueError("模型返回的不是 JSON") from None
+    if not isinstance(resp, dict) or not isinstance(resp.get("reply"), str):
+        raise ValueError("模型返回的 JSON 缺少 reply")
+    return resp
+
+
+def write_deck(deck, html):
+    f = Path(deck) / "deck.html"
+    tmp = f.with_name(".deck.runner.tmp")
+    tmp.write_bytes(html.encode("utf-8"))
+    os.replace(tmp, f)  # atomic: the page and the watcher never see half a file
+
+
+def llm_handle(deck, base_url, key, model, timeout, name):
+    deck = Path(deck).resolve()
+    f = deck / "deck.html"
+    def one(ev, by_id):
+        if _unsupported(ev):
+            return UNSUPPORTED
+        html = f.read_text(encoding="utf-8")
+        try:
+            messages, sent = build_messages(deck, ev, by_id, html)
+        except ValueError as x:
+            return str(x)
+        resp = _parse(chat(base_url, key, model, messages, timeout))
+        now = f.read_text(encoding="utf-8")  # the user may have changed it while the model was thinking
+        new, why = apply_changes(now, resp, sent)
+        if why:
+            return why if why == CONFLICT else f"没改成：{why}"
+        if new != now:
+            write_deck(deck, new)
+        return resp["reply"]
+    def handle(evs, lines):
+        by_id = {e.get("id"): e for e in server.read_jsonl(server.runtime(deck) / "inbox.jsonl")}
+        for ev in evs:
+            print(f"处理 {server.safe_summary(ev)}", flush=True)
+            try:
+                text = one(ev, by_id)
+            except (RuntimeError, ValueError) as x:
+                text = f"没改成：{x}"
+            except Exception as x:  # one bad event must not take the others down
+                text = f"没改成：{type(x).__name__}"
+            server.reply(deck, ev["id"], scrub(text, key))
     return handle
 
 

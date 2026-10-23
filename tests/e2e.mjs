@@ -324,6 +324,7 @@ try {
   await type('标题改短一点'); await enter(); await sleep(2500);
   const ask = inbox().at(-1);
   check('F ask Claude sends selection', ask?.type === 'intent' && ask.blocks?.[0] === 'b-p2-title' && !!ask.shot, JSON.stringify({ ...ask, shot: !!ask?.shot }));
+  check('F the Enter that sends does not open the box again', !(await ev(`document.querySelector('.ppt-pop')`)));
   check('F user styling raises no lint for Claude', inbox().filter((e) => e.type === 'lint').length === lintBefore);
   // ---- 2b: floating objects written into the file (as Claude would) ----
   await open(url); await sleep(1500);

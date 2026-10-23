@@ -618,6 +618,7 @@
     if (sketch) return; // the sketch board owns the keyboard
     if (editing) { if (e.key === 'Escape') endEdit(); return; } // typing and its own undo belong to the browser; Escape works even from a toolbar control
     if (e.target.closest?.('#ppt-ui') && (/^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName) || e.target.closest('.ppt-kb'))) return; // keys in a panel are not for the slide
+    if (/^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName) && !e.target.isConnected) return; // the Enter that sent a box and removed it is not a second Enter on the selection
     const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
     if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); undoRedo('undo'); }
     else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); undoRedo('redo'); }

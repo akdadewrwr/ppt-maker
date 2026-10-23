@@ -1,20 +1,15 @@
 ## 上一轮完成
-- 新增 `server.py --install-claude`：写全局 `~/.claude/commands/ppt.md`（模板 claude/commands/ppt.md，填入本仓库路径），建 ~/.ppt-maker
-- 新增使用指南 docs/guide.html（已写入 --install-claude 步骤）
-- 已合并 main 并推送；server 158/158、selftest 99/99、e2e 198/198（重跑）
+- 分支 fix/flaky-export-e2e：改稳导出 e2e，两遍 e2e 均 198/198，已推送，等用户同意合并
 
 ## 关键结论
-- Claude：先 --install-claude，任意目录 `/ppt <名字>`；Codex：先 --install-codex + 改 config.toml，`$ppt <名字>`
-- 同一 deck 一次只开一边
-- "导出时改稿等导出完再刷新"这条 e2e 偶发失败，重跑即过，又出现一次
+- 偶发失败的原因：导出完成提示只存在 ≤1 秒（下一次 poll 会执行推迟的刷新并清掉它），测试每 300ms 才看一眼，机器慢时会错过；代码本身没问题
+- 修法：页面用 MutationObserver 把"看到导出完成"记进 sessionStorage（刷新后还在）；改稿前先等按钮变成"导出中…"；等到新页面带上改动后再读记录
 
 ## 改动文件
-- ppt/server.py、ppt/test_server.py、claude/commands/ppt.md（新）、docs/guide.html（新）
+- tests/e2e.mjs
 
 ## 当前 blocker
 - 无
 
 ## 下一步
-- 等用户新需求
-- 建议：把那条偶发失败的导出 e2e 改成更稳的等待
-- 可选：4 个延后 minor
+- 用户同意后合并 main、推送、删分支

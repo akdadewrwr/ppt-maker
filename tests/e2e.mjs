@@ -842,12 +842,18 @@ print(json.dumps({"n": len(p.slides), "texts": [sh.text_frame.text for s in p.sl
     const took = Date.now() - te; await sleep(1000);
     check('X a terminal-driven export (export=1) writes the file within 20 s (a picture that never loads is skipped) and downloads nothing', took < 20000 && fs.existsSync(path.join(DECK, '.ppt', 'export.json')) && fs.readdirSync(DL).length === before, JSON.stringify([before, fs.readdirSync(DL), fs.existsSync(path.join(DECK, '.ppt', 'export.json')), took]));
     await open(url); await sleep(800); }
-  { b9 = await byTitle('导出成可在 PowerPoint'); await click(b9.x, b9.y); await sleep(200);
+  { b9 = null; for (let i = 0; i < 40 && !(b9 = await byTitle('导出成可在 PowerPoint')); i++) await sleep(250);
+    // the report lives under a second before the deferred reload wipes it: the page notes it in sessionStorage, which survives the reload
+    await ev(`(() => { sessionStorage.removeItem('e2e-export-done'); new MutationObserver(() => { if ([...document.querySelectorAll('.ppt-toast')].some((t) => t.textContent.includes('导出完成'))) sessionStorage.setItem('e2e-export-done', '1'); })
+      .observe(document.getElementById('ppt-ui'), { childList: true, subtree: true }); })()`);
+    await click(b9.x, b9.y);
+    let busy = false; for (let i = 0; i < 40 && !busy; i++) { await sleep(50); busy = (await ev(`[...document.querySelectorAll('#ppt-ui [title^="导出成可在"]')].some((b) => b.textContent === '导出中…')`)); }
     fs.writeFileSync(path.join(DECK, 'deck.html'), deckHtml().replace('</body>', '<!-- changed during export --></body>'));
-    let seen = false;
-    for (let i = 0; i < 100 && !seen; i++) { await sleep(300); seen = ((await ev(`[...document.querySelectorAll('.ppt-toast')].map((t) => t.textContent).join()`)) || '').includes('导出完成'); }
-    check('X a deck change during an export waits for it to finish before reloading', seen);
-    await sleep(1000); for (let i = 0; i < 40 && !(await byTitle('导入以前做过的 HTML')); i++) await sleep(250); }  // the deferred reload lands after the export
+    let reloaded = false; // the change's reload drops the observer's page; done when the fresh page carries the change
+    for (let i = 0; i < 200 && !reloaded; i++) { await sleep(300); reloaded = !!(await ev(`document.documentElement.outerHTML.includes('changed during export') && !!document.querySelector('#ppt-ui [title^="导出成可在"]')`)); }
+    const done = await ev(`sessionStorage.getItem('e2e-export-done')`);
+    check('X a deck change during an export waits for it to finish before reloading', busy && reloaded && done === '1', JSON.stringify([busy, reloaded, done]));
+    for (let i = 0; i < 40 && !(await byTitle('导入以前做过的 HTML')); i++) await sleep(250); }
   const pptxPath = path.join(SCRATCH, '旧稿.pptx');
   execFileSync('python', ['-c', `import sys
 from pptx import Presentation

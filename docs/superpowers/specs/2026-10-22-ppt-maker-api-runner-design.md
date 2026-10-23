@@ -73,5 +73,5 @@ python ppt/runner.py "decks/<名字>" --backend agent --cmd "claude -p --permiss
 - runner 的输出格式（每处理一个事件打印一行即可）。
 
 ## 测试
-- 单元（test_server.py 新增类）：用一个本地假 OpenAI 服务（http.server）和一个假 agent 命令（python 小脚本），覆盖：正常改页、插页删页、改 theme、各条校验拒绝、请求失败、用户期间改页不覆盖、不支持事件、agent 命令不回执时代为回执、超时、key 不出现在回执和 deck 目录。
+- 单元（新文件 `ppt/test_runner.py`，runner 是独立模块，测试跟着它走）：用一个本地假 OpenAI 服务（http.server）和一个假 agent 命令（python 小脚本），覆盖：正常改页、插页删页、改 theme、各条校验拒绝、请求失败、用户期间改页不覆盖、不支持事件、agent 命令不回执时代为回执、超时、key 不出现在回执和 deck 目录。
 - 不加 e2e（页面没改）。

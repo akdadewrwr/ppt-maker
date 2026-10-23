@@ -1,11 +1,12 @@
 """ppt-maker runner: the agent session's job (wait -> handle -> reply) done by the user's own agent command or LLM API."""
-import argparse, base64, contextlib, json, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.request
+import argparse, base64, contextlib, json, locale, os, re, subprocess, sys, threading, time, urllib.error, urllib.request
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
+from importer import kill_tree
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -315,18 +316,18 @@ def agent_prompt(deck, lines):
             + "\n\n处理完每个事件都要先 --ack 再 --reply（不需要改动的也回执一句说明）；处理完就退出，不要运行 --wait 或 --tail。\n")
 
 
-def kill_tree(p):
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
-    else:
-        with contextlib.suppress(OSError):
-            os.killpg(p.pid, signal.SIGKILL)
+def text_of(b):
+    try:
+        return (b or b"").decode("utf-8")
+    except UnicodeDecodeError:  # e.g. cp936 from a Windows console tool
+        return b.decode(locale.getpreferredencoding(False), "replace")
 
 
 def agent_handle(deck, cmd, timeout, name):
     deck = Path(deck).resolve()
     def handle(evs, lines):
-        prompt = agent_prompt(deck, lines)
+        shown = {line.split()[0] for line in lines if line and not line.startswith("最近完成")}
+        prompt = agent_prompt(deck, lines + [server.safe_summary(e) for e in evs if e["id"] not in shown])
         pf = server.runtime(deck) / "runner-prompt.md"
         pf.write_bytes(prompt.encode("utf-8"))
         c = cmd.replace("{prompt}", f'"{pf}"').replace("{deck}", f'"{deck}"')
@@ -336,12 +337,15 @@ def agent_handle(deck, cmd, timeout, name):
         try:
             out, err = p.communicate(timeout=timeout)
             code = p.returncode
+        except KeyboardInterrupt:
+            kill_tree(p)
+            raise
         except subprocess.TimeoutExpired:
             kill_tree(p)  # the shell's children too, or their open pipes would block us
             code, out, err = "超时", b"", b""
             with contextlib.suppress(subprocess.TimeoutExpired):
                 out, err = p.communicate(timeout=5)
-        out, err = (out or b"").decode("utf-8", "replace"), (err or b"").decode("utf-8", "replace")
+        out, err = text_of(out), text_of(err)
         if out.strip():
             print(out.strip()[-2000:], flush=True)
         finish(deck, evs, f"{name} 没有回执这条（退出码 {code}）：{err.strip()[-300:]}")
@@ -352,6 +356,7 @@ def agent_handle(deck, cmd, timeout, name):
 UNSUPPORTED = "API 模式暂不支持这类操作（知识库 / 导入），请用 Claude / Codex 或 agent 后端"
 TOO_BIG = "这份稿子太大，API 模式处理不了，请指定一页再说"
 MAX_PAGES = 200_000
+MAX_RESPONSE = 32 * 1024 * 1024
 
 
 def scrub(s, key):
@@ -366,8 +371,16 @@ def chat(base_url, key, model, messages, timeout):
         req = urllib.request.Request(url, json.dumps(body, ensure_ascii=False).encode("utf-8"),
                                      {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = json.loads(r.read().decode("utf-8"))
+            end = time.monotonic() + timeout
+            with urllib.request.urlopen(req, timeout=timeout) as r:  # that timeout is per socket read: a dripping server needs the deadline too
+                buf = bytearray()
+                while chunk := r.read1(65536):
+                    buf += chunk
+                    if time.monotonic() > end:
+                        raise RuntimeError(f"接口超时（{timeout:g} 秒）")
+                    if len(buf) > MAX_RESPONSE:
+                        raise RuntimeError("接口返回的内容太大")
+            data = json.loads(buf.decode("utf-8"))
             return data["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
             if e.code == 400 and "response_format" in body:  # some servers don't take json mode: once more without it
@@ -375,6 +388,8 @@ def chat(base_url, key, model, messages, timeout):
                 continue
             detail = scrub(e.read(65536).decode("utf-8", "replace"), key)[:300]  # scrub before cutting: a cut key no longer matches
             raise RuntimeError(f"接口返回 {e.code}：{detail}") from None
+        except TimeoutError:
+            raise RuntimeError(f"接口超时（{timeout:g} 秒）") from None
         except (urllib.error.URLError, OSError) as e:
             raise RuntimeError(scrub(f"连不上接口：{e}", key)) from None
         except (KeyError, IndexError, TypeError, ValueError):
@@ -451,13 +466,18 @@ def _parse(content):
     return resp
 
 
-def write_deck(deck, html):
+def write_deck(deck, html, expect=None):
+    """Atomically write deck.html; False (nothing written) when it no longer holds `expect`."""
     f = Path(deck) / "deck.html"
     tmp = f.with_name(".deck.runner.tmp")
     tmp.write_bytes(html.encode("utf-8"))
     for n in range(6):  # atomic: the page and the watcher never see half a file
         try:
-            return os.replace(tmp, f)
+            if expect is not None and f.read_bytes().decode("utf-8", "replace") != expect:  # ponytail: a save landing between this read and the replace still loses; that needs the server's lock
+                tmp.unlink(missing_ok=True)
+                return False
+            os.replace(tmp, f)
+            return True
         except PermissionError:  # Windows: the server is reading deck.html this very moment
             if n == 5:
                 tmp.unlink(missing_ok=True)
@@ -468,25 +488,32 @@ def write_deck(deck, html):
 def llm_handle(deck, base_url, key, model, timeout, name):
     deck = Path(deck).resolve()
     f = deck / "deck.html"
+    wrote = [False]
     def one(ev, by_id):
         if _unsupported(ev):
             return UNSUPPORTED
-        html = f.read_text(encoding="utf-8")
+        html = f.read_bytes().decode("utf-8")
         try:
             messages, sent = build_messages(deck, ev, by_id, html)
         except ValueError as x:
             return str(x)
         resp = _parse(chat(base_url, key, model, messages, timeout))
-        now = f.read_text(encoding="utf-8")  # the user may have changed it while the model was thinking
+        now = f.read_bytes().decode("utf-8")  # the user may have changed it while the model was thinking
         new, why = apply_changes(now, resp, sent)
         if why:
             return why if why == CONFLICT else f"没改成：{why}"
         if new != now:
-            write_deck(deck, new)
+            server.reply(deck, ev["id"], ack=True)
+            if not write_deck(deck, new, expect=now):
+                return CONFLICT
+            wrote[0] = True
         return resp["reply"]
     def handle(evs, lines):
         by_id = {e.get("id"): e for e in server.read_jsonl(server.runtime(deck) / "inbox.jsonl")}
         for ev in evs:
+            if wrote[0]:  # let the watcher make the last write its own undo step first
+                time.sleep(server.WATCH_SECS * 3)
+                wrote[0] = False
             print(f"处理 {server.safe_summary(ev)}", flush=True)
             try:
                 text = one(ev, by_id)

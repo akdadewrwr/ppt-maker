@@ -232,6 +232,32 @@ class RunnerTests(DeckCase):
         self.assertLess(_time() - t, 15)
         self.assertIn("超时", self.replies("e1")[0])
 
+    def test_minor_m3_one_kill_tree(self):
+        import importer
+        self.assertIs(runner.kill_tree, importer.kill_tree)
+
+    def test_minor_m4_ctrl_c_ends_the_agent(self):
+        ev = self.add("e1")
+        killed = []
+        with mock.patch.object(runner.subprocess.Popen, "communicate", side_effect=KeyboardInterrupt), \
+             mock.patch.object(runner, "kill_tree", side_effect=lambda p: (killed.append(p.pid), p.kill(), p.wait())):
+            with self.assertRaises(KeyboardInterrupt):
+                runner.agent_handle(self.deck, self.script("time.sleep(20)"), 30, "A")([ev], ["e1 intent"])
+        self.assertEqual(len(killed), 1)
+
+    def test_minor_m5_every_event_reaches_the_prompt(self):
+        e1, e2 = self.add("e1"), self.add("e2", text="后到的")
+        cmd = self.script("p = sys.stdin.buffer.read().decode('utf-8')\nfor e in ('e1', 'e2'):\n    server.reply(Path(sys.argv[1]), e, 'seen' if e + ' intent' in p else 'missing')") + " {deck}"
+        runner.agent_handle(self.deck, cmd, 30, "A")([e1, e2], ["e1 intent slide:- [] 做e1"])
+        self.assertEqual((self.replies("e1"), self.replies("e2")), (["seen"], ["seen"]))
+
+    def test_minor_m8_stderr_in_the_console_code_page(self):
+        import locale
+        enc = locale.getpreferredencoding(False)
+        ev = self.add("e1")
+        runner.agent_handle(self.deck, self.script(f"sys.stderr.buffer.write('中文出错'.encode({enc!r})); sys.exit(1)"), 30, "A")([ev], ["e1 intent"])
+        self.assertIn("中文出错", self.replies("e1")[0])
+
     def test_agent_prompt_has_rules_and_paths(self):
         p = runner.agent_prompt(self.deck.resolve(), ["e1 intent slide:s-a"])
         for s in ("## deck.html 格式规则", self.deck.resolve().as_posix(), Path(sys.executable).as_posix(), "e1 intent slide:s-a", "不要运行 --wait"):
@@ -255,12 +281,22 @@ class FakeLLM(BaseHTTPRequestHandler):
         status, out = self.server.queue.pop(0)
         if callable(out):
             status, out = 200, out()
-        data = out.encode("utf-8")
+        drip = isinstance(out, tuple)
+        data = (out[1] if drip else out).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if not drip:
+            return self.wfile.write(data)
+        import time
+        for b in data:  # one byte every 0.3 s: no single read ever times out
+            try:
+                self.wfile.write(bytes([b]))
+                self.wfile.flush()
+            except OSError:
+                return
+            time.sleep(0.3)
 
     def log_message(self, *a):
         pass
@@ -384,6 +420,36 @@ class LlmTests(DeckCase):
             runner.write_deck(self.deck, "<html>new</html>")
         self.assertEqual((self.deck / "deck.html").read_text(encoding="utf-8"), "<html>new</html>")
         self.assertFalse((self.deck / ".deck.runner.tmp").exists())
+
+    def test_minor_m2_write_refuses_when_the_file_moved_on(self):
+        f = self.deck / "deck.html"
+        f.write_text("<html>user</html>", encoding="utf-8")
+        self.assertFalse(runner.write_deck(self.deck, "<html>model</html>", expect="<html>before</html>"))
+        self.assertEqual(f.read_text(encoding="utf-8"), "<html>user</html>")
+        self.assertTrue(runner.write_deck(self.deck, "<html>model</html>", expect="<html>user</html>"))
+        self.assertEqual(f.read_text(encoding="utf-8"), "<html>model</html>")
+
+    def test_minor_m6_each_write_is_labelled_with_its_own_event(self):
+        evs = [self.add("e1", slide_id="s-cover"), self.add("e2", slide_id="s-cover")]
+        server.write_agent(self.deck, "M")  # run() does this through wait_events
+        for e in evs:
+            server.reply(self.deck, e["id"], ack=True)  # run() acks the whole batch first
+        self.srv.queue += [(200, said({"reply": "1", "slides": [self.cover("一")]})), (200, said({"reply": "2", "slides": [self.cover("二")]}))]
+        labels, real = [], runner.write_deck
+        def spy(deck, html, expect=None):
+            labels.append(server.claude_label(deck))
+            return real(deck, html, expect)
+        with mock.patch.object(runner, "write_deck", spy), mock.patch.object(runner.time, "sleep"):
+            self.handle(*evs)
+        self.assertEqual(labels, ["M 处理 #e1", "M 处理 #e2"])
+
+    def test_minor_m7_whole_request_has_a_deadline(self):
+        ev = self.add("e1", slide_id="s-cover")
+        self.srv.queue.append((200, ("drip", said({"reply": "慢"}))))
+        t = _time()
+        runner.llm_handle(self.deck, self.url, "k", "m", 1, "M")([ev], [])
+        self.assertLess(_time() - t, 6)
+        self.assertIn("超时", self.replies("e1")[0])
 
     def test_llm_unreachable(self):
         ev = self.add("e1", slide_id="s-cover")

@@ -1,18 +1,19 @@
 ## 上一轮完成
-- feat/api-runner 完成并推送：runner.py（agent / llm 两种后端）、test_runner.py、prompts/ppt-llm.md、guide 2b 节
-- opus 整分支 review：1 Critical + 4 Important + M1（升级）全部 TDD 修复；runner 42/42、server 158/158；agent 后端真实命令行冒烟通过
+- 在 feat/api-runner 上修完 review 的 8 个 minor（各自先红后绿），已推送到 GitHub 的 feat/api-runner；未合并 main（用户要求先不合并）
+- runner 49/49、server 158/158；agent 后端命令行冒烟再次通过
 
 ## 关键结论
-- 校验与找页改用 html.parser（注释、引号内的值、实体编码、`/` 分隔属性、`//` 开头网址都绕不过）；页面里有没闭合的标签 / 注释，或有 <style>/<textarea> 等，一律拒绝
-- 报错正文先去掉 key 再截断；Windows 上 os.replace 被占用时重试
-- 延后 minor：M2 写入窗口竞态、M3 kill_tree 重复、M4 POSIX Ctrl+C、M5 等待间隙到达的事件、M6 撤销标签、M7 请求总超时、M8 stderr 编码、M10 测试文件位置
+- M2 写前再比对文件，变了就不写、回执请用户再说（读和替换之间仍有极小窗口，要彻底需服务端锁）
+- M3 复用 importer.kill_tree；M4 Ctrl+C 时一并结束 agent；M5 提示里补上等待后才到的事件
+- M6 写之前再 ack 一次本事件，撤销标签不再标错；同批多次写之间等 watcher 记成各自一步
+- M7 整个请求一个截止时间 + 32MB 上限；M8 stderr 不是 UTF-8 时按系统编码解；M10 spec 改为测试在 ppt/test_runner.py
+- llm 后端读写 deck.html 改为按原始字节，CRLF 稿子不被改换行
 
 ## 改动文件
-- ppt/runner.py、ppt/test_runner.py、prompts/ppt-llm.md（新）；docs/guide.html；spec + plan
+- ppt/runner.py、ppt/test_runner.py、docs/superpowers/specs/2026-10-22-ppt-maker-api-runner-design.md
 
 ## 当前 blocker
 - llm 后端只对假接口测过，还没用真实 API key 跑过
 
 ## 下一步
-- 问用户是否合并 main（合并后在 main 上跑全部测试、推送、删分支）
-- 建议用户用自己的 key 实测一次 llm 后端
+- 用户用自己的 key 实测 llm 后端；用户同意后再合并 main

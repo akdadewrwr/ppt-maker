@@ -1,21 +1,18 @@
 ## 上一轮完成
-- 在 feat/api-runner 上修完 review 的 8 个 minor（各自先红后绿），已推送到 GitHub 的 feat/api-runner；未合并 main（用户要求先不合并）
-- 新增 docs/api-runner.md：两种后端的用法、接口要求、返回 JSON 格式、校验规则、agent 接入约定与示例、参数表；guide 2b 节加了链接
-- 新增 README.md（项目简介、需要、三种快速开始、文档、目录、测试）
-- runner 49/49、server 158/158；agent 后端命令行冒烟再次通过
+- feat/api-runner 上：README 加了截图和动图（hero、intent.gif、sketch.gif、batch、export，放 docs/media/），由 tools/readme-media.mjs 从真实编辑器录制，可重跑
+- 录制时发现并修了页面 bug：选中块后在输入框按 Enter 发送，输入框会立刻重新弹出（e2e 新增检查，先红后绿，199/199）
+- 之前：runner 8 个 minor、docs/api-runner.md、README 已推送；未合并 main
 
 ## 关键结论
-- M2 写前再比对文件，变了就不写、回执请用户再说（读和替换之间仍有极小窗口，要彻底需服务端锁）
-- M3 复用 importer.kill_tree；M4 Ctrl+C 时一并结束 agent；M5 提示里补上等待后才到的事件
-- M6 写之前再 ack 一次本事件，撤销标签不再标错；同批多次写之间等 watcher 记成各自一步
-- M7 整个请求一个截止时间 + 32MB 上限；M8 stderr 不是 UTF-8 时按系统编码解；M10 spec 改为测试在 ppt/test_runner.py
-- llm 后端读写 deck.html 改为按原始字节，CRLF 稿子不被改换行
+- 录制脚本用自己的临时稿子和端口 8810，agent 一侧由脚本代替（README 里写明了），不需要 API key
+- GIF 由 tools/frames_to_gif.py（Pillow，仅开发用）合成，宽 960，每个约 270–300KB
+- Enter 重开的根因：发送时输入框已被移除，页面键盘处理判断不出它来自面板；改为忽略已脱离页面的输入框的按键
 
 ## 改动文件
-- ppt/runner.py、ppt/test_runner.py、docs/superpowers/specs/2026-10-22-ppt-maker-api-runner-design.md、docs/api-runner.md（新）、README.md（新）、docs/guide.html
+- ppt/editor.js、tests/e2e.mjs、README.md、tools/readme-media.mjs（新）、tools/frames_to_gif.py（新）、docs/media/*（新）
 
 ## 当前 blocker
 - llm 后端只对假接口测过，还没用真实 API key 跑过
 
 ## 下一步
-- 用户用自己的 key 实测 llm 后端；用户同意后再合并 main
+- 用户看 README 效果；用自己的 key 实测 llm 后端；同意后合并 main

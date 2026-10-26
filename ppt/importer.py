@@ -245,8 +245,12 @@ def pptx_extract(path, out_dir):
 
     def one(sh, ax, ay, bx, by, items, turns):
             x0, y0 = sh.left or 0, sh.top or 0
+            w0, h0 = sh.width or 0, sh.height or 0
+            if getattr(sh, "has_table", False) and sh.has_table:  # some writers (WPS) leave the frame 0×0; PowerPoint sizes a table from its grid
+                w0 = w0 or sum(c.width or 0 for c in sh.table.columns)
+                h0 = h0 or sum(r.height or 0 for r in sh.table.rows)
             g = {"name": sh.name, "x": round((ax + bx * x0) * k, 1), "y": round((ay + by * y0) * k, 1),
-                 "w": round(bx * (sh.width or 0) * k, 1), "h": round(by * (sh.height or 0) * k, 1), "rotation": round(getattr(sh, "rotation", 0) or 0, 1)}
+                 "w": round(bx * w0 * k, 1), "h": round(by * h0 * k, 1), "rotation": round(getattr(sh, "rotation", 0) or 0, 1)}
             st = sh.shape_type
             g0 = dict(g)
             if turns:

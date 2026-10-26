@@ -1685,6 +1685,21 @@ class ImporterTests(ServerCase):
     def save(self, data, name):
         return importer.save(self.deck, io.BytesIO(data), len(data), name)
 
+    def test_a_table_with_a_zero_frame_takes_its_grid_size(self):  # WPS writes <a:ext cx="0" cy="0"/>; PowerPoint lays it out from the grid
+        from pptx import Presentation
+        from pptx.util import Inches
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+        gf = prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_table(2, 2, Inches(1), Inches(2), Inches(4), Inches(1))
+        gf.width = gf.height = 0
+        src = self.tmp / "zero.pptx"
+        prs.save(str(src))
+        out = self.tmp / "zero"
+        out.mkdir()
+        importer.pptx_extract(src, out)
+        tbl = [i for i in json.loads((out / "slides.json").read_text(encoding="utf-8"))["slides"][0]["items"] if i["kind"] == "table"][0]
+        self.assertEqual((round(tbl["w"]), round(tbl["h"])), (384, 96))  # 2 columns of 2in, 2 rows of 0.5in, at 96 px/in
+
     def test_hint(self):
         self.assertEqual(importer.hint(TEMPLATE.read_text(encoding="utf-8")), "ppt-maker")
         self.assertEqual(importer.hint(REVEAL), "slides")

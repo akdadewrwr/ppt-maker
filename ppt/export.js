@@ -79,6 +79,69 @@ window.PPTExport = (() => {
     } finally { URL.revokeObjectURL(url); }
   }
 
+  function arcSegs(x1, y1, rx, ry, deg, large, sweep, x2, y2) { // SVG 1.1 F.6.5: endpoint arc -> centre form -> cubics of ≤ 90° each
+    const phi = deg * Math.PI / 180, cos = Math.cos(phi), sin = Math.sin(phi);
+    const dx = (x1 - x2) / 2, dy = (y1 - y2) / 2, xp = cos * dx + sin * dy, yp = -sin * dx + cos * dy;
+    const lam = (xp * xp) / (rx * rx) + (yp * yp) / (ry * ry);
+    if (lam > 1) { rx *= Math.sqrt(lam); ry *= Math.sqrt(lam); }
+    const den = rx * rx * yp * yp + ry * ry * xp * xp;
+    let co = Math.sqrt(Math.max(0, (rx * rx * ry * ry - den) / den));
+    if (large === sweep) co = -co;
+    const cxp = co * rx * yp / ry, cyp = -co * ry * xp / rx;
+    const cx = cos * cxp - sin * cyp + (x1 + x2) / 2, cy = sin * cxp + cos * cyp + (y1 + y2) / 2;
+    const ang = (ux, uy, vx, vy) => Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+    const t1 = ang(1, 0, (xp - cxp) / rx, (yp - cyp) / ry);
+    let dt = ang((xp - cxp) / rx, (yp - cyp) / ry, (-xp - cxp) / rx, (-yp - cyp) / ry);
+    if (!sweep && dt > 0) dt -= 2 * Math.PI; else if (sweep && dt < 0) dt += 2 * Math.PI;
+    const n = Math.max(1, Math.ceil(Math.abs(dt) / (Math.PI / 2) - 1e-9)), step = dt / n, k = 4 / 3 * Math.tan(step / 4);
+    const at = (u, v) => [cx + rx * u * cos - ry * v * sin, cy + rx * u * sin + ry * v * cos];
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const a = t1 + i * step, b = a + step;
+      const end = i === n - 1 ? [x2, y2] : at(Math.cos(b), Math.sin(b));
+      out.push(['C', ...at(Math.cos(a) - k * Math.sin(a), Math.sin(a) + k * Math.cos(a)), ...at(Math.cos(b) + k * Math.sin(b), Math.sin(b) - k * Math.cos(b)), ...end]);
+    }
+    return out;
+  }
+  function pathSegs(d) { // SVG path data -> absolute ['M',x,y] ['L',x,y] ['C',x1,y1,x2,y2,x,y] ['Z']; stops at the first bad token, like browsers
+    const out = [], NUM = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/y, SEP = /[\s,]*/y;
+    let p = 0, cmd = '', x = 0, y = 0, sx = 0, sy = 0, cx = null, cy = null, qx = null, qy = null;
+    d = String(d || '');
+    const skip = () => { SEP.lastIndex = p; SEP.exec(d); p = SEP.lastIndex; };
+    const num = () => { skip(); NUM.lastIndex = p; const m = NUM.exec(d); if (!m) throw new Error('bad path'); p = NUM.lastIndex; return +m[0]; };
+    const flag = () => { skip(); const c = d[p]; if (c !== '0' && c !== '1') throw new Error('bad flag'); p++; return c === '1'; }; // flags may touch: a1 1 0 01 2 2
+    try {
+      for (;;) {
+        skip();
+        if (p >= d.length) break;
+        if (/[a-z]/i.test(d[p])) { cmd = d[p++]; if (!'MmLlHhVvCcSsQqTtAaZz'.includes(cmd)) break; }
+        else if (!cmd || cmd === 'Z' || cmd === 'z') break; // a number with no command to repeat
+        const rel = cmd === cmd.toLowerCase(), C = cmd.toUpperCase(), ox = rel ? x : 0, oy = rel ? y : 0;
+        let ncx = null, ncy = null, nqx = null, nqy = null;
+        if (C === 'Z') { out.push(['Z']); x = sx; y = sy; }
+        else if (C === 'M') { x = ox + num(); y = oy + num(); sx = x; sy = y; out.push(['M', x, y]); cmd = rel ? 'l' : 'L'; }
+        else if (C === 'L') { x = ox + num(); y = oy + num(); out.push(['L', x, y]); }
+        else if (C === 'H') { x = ox + num(); out.push(['L', x, y]); }
+        else if (C === 'V') { y = oy + num(); out.push(['L', x, y]); }
+        else if (C === 'C' || C === 'S') {
+          const [x1, y1] = C === 'C' ? [ox + num(), oy + num()] : cx === null ? [x, y] : [2 * x - cx, 2 * y - cy];
+          const x2 = ox + num(), y2 = oy + num(), ex = ox + num(), ey = oy + num();
+          out.push(['C', x1, y1, x2, y2, ex, ey]); x = ex; y = ey; ncx = x2; ncy = y2;
+        } else if (C === 'Q' || C === 'T') {
+          const [q1, q2] = C === 'Q' ? [ox + num(), oy + num()] : qx === null ? [x, y] : [2 * x - qx, 2 * y - qy];
+          const ex = ox + num(), ey = oy + num();
+          out.push(['C', x + 2 / 3 * (q1 - x), y + 2 / 3 * (q2 - y), ex + 2 / 3 * (q1 - ex), ey + 2 / 3 * (q2 - ey), ex, ey]); x = ex; y = ey; nqx = q1; nqy = q2;
+        } else { // A
+          const rx = Math.abs(num()), ry = Math.abs(num()), deg = num(), large = flag(), sweep = flag(), ex = ox + num(), ey = oy + num();
+          if (ex !== x || ey !== y) out.push(...(rx && ry ? arcSegs(x, y, rx, ry, deg, large, sweep, ex, ey) : [['L', ex, ey]]));
+          x = ex; y = ey;
+        }
+        cx = ncx; cy = ncy; qx = nqx; qy = nqy;
+      }
+    } catch { /* keep what parsed */ }
+    return out;
+  }
+
   async function measureSlide(slide, skipped) {
     const sr = slide.getBoundingClientRect(), k = sr.width / W;
     const rel = (r) => ({ x: (r.left - sr.left) / k, y: (r.top - sr.top) / k, w: r.width / k, h: r.height / k });
@@ -202,5 +265,5 @@ window.PPTExport = (() => {
     for (const s of slides) out.push(await measureSlide(s, skipped));
     return { slides: out, skipped };
   }
-  return { measure };
+  return { measure, pathSegs };
 })();

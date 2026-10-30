@@ -92,6 +92,8 @@ def build(data, out):
             para.line_spacing = Pt(float(p["lh"]) * 0.75)
         lvl = int(p.get("level") or 0)
         para.level = min(lvl, 8)
+        if p.get("indent") and not p.get("bullet"):  # the first line starts after a leading badge or icon, as on the page
+            para._p.get_or_add_pPr().set("indent", str(E(p["indent"])))
         if p.get("bullet"):
             pPr = para._p.get_or_add_pPr()
             pPr.set("marL", str(E(24 * (lvl + 1))))

@@ -675,6 +675,13 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual((text.text_frame.text, text.rotation, text.text_frame.word_wrap), ("框选", 15.0, False))
         self.assertEqual(pic.shape_type, MSO_SHAPE_TYPE.PICTURE)
 
+    def test_a_first_line_indent_leaves_room_for_a_leading_badge(self):  # an inline-block "1" badge sat on top of the text
+        from pptx import Presentation
+        para = {"align": "l", "indent": 28, "runs": [{"t": "落点控制 端侧点选的落点", "size": 13}]}
+        exporter.build({"slides": [{"id": "s", "bg": None, "items": [{"k": "text", "x": 0, "y": 0, "w": 400, "h": 40, "paras": [para]}]}]}, self.tmp / "i.pptx")
+        pPr = Presentation(str(self.tmp / "i.pptx")).slides[0].shapes[0].text_frame.paragraphs[0]._p.pPr
+        self.assertEqual((pPr.get("indent"), pPr.get("marL")), (str(28 * 9525), None))
+
     def test_svg_shapes_xml_is_in_schema_order(self):  # PowerPoint repairs out-of-order spPr / ln children
         from pptx import Presentation
         from pptx.oxml.ns import qn

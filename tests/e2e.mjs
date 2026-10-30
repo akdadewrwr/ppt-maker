@@ -765,6 +765,7 @@ try {
     <rect x="360" y="10" width="30" height="30" fill="url(#g-ex)"/>
     <circle cx="5" cy="5" r="3" style="display:none"/>
   </svg></div>
+  <div class="block" id="b-ex-badge" style="grid-area:3/12/6/17;font-size:13px"><div style="padding:6px 10px;background:#eeeeff"><span style="display:inline-block;width:22px;height:22px;line-height:22px;border-radius:50%;background:#dc2626;color:#fff;text-align:center;margin-right:6px">1</span><b>落点控制</b>　端侧点选的落点作为新增条件注入现有模型，控制新物体在画面中出现的位置</div></div>
   <div class="obj" id="o-ex-icon" data-kind="icon" style="left:40px;top:640px;width:48px;height:48px;color:#ef4444;stroke-width:2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12h16"/></svg></div>
 </section>
 <section class="slide" id="s-export-bg" style="background:linear-gradient(90deg,#ffffff,#eeeeee)">
@@ -814,6 +815,12 @@ try {
   check('X only the gradient element is a picture, and the report says why', fig?.items[5]?.why === '渐变或图案' && fig.items[5].src?.startsWith('data:image/png'), JSON.stringify(fig?.items[5]?.why));
   const icon = ms.slides[0].items.find((i) => i.k === 'group' && i.id === 'o-ex-icon');
   check('X an icon exports as an editable line in the text colour, no fill', icon?.items.length === 1 && icon.items[0].k === 'path' && icon.items[0].line === 'ef4444' && icon.items[0].fill === null, JSON.stringify(icon));
+  const badgeText = ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0]?.t === '落点控制');
+  const badgeBox = ms.slides[0].items.find((i) => i.k === 'box' && i.fill === 'dc2626');
+  check('X text after a leading badge gets a first-line indent, so the badge does not cover it', badgeText && badgeBox && Math.abs(badgeText.paras[0].indent - 28) < 1.5
+    && Math.abs(badgeText.x - badgeBox.x) < 1.5, JSON.stringify([badgeText?.x, badgeText?.paras[0].indent, badgeBox?.x]));
+  const plainIndent = ms.slides[0].items.filter((i) => i.k === 'text' && i !== badgeText && i.paras[0].indent);
+  check('X ordinary and centred text gets no indent', plainIndent.length === 0, JSON.stringify(plainIndent.map((i) => i.paras[0].runs[0]?.t)));
   const failed = JSON.parse(await ev(`(async () => { const real = htmlToImage.toCanvas; htmlToImage.toCanvas = () => Promise.reject(new Error('boom'));
     try { return JSON.stringify(await PPTExport.measure([document.getElementById('s-export')])); } finally { htmlToImage.toCanvas = real; } })()`));
   const fItems = failed.slides[0].items;

@@ -65,7 +65,7 @@ window.PPTExport = (() => {
     walk(root);
     if (!rs.length) return null;
     const l = Math.min(...rs.map((r) => r.left)), t = Math.min(...rs.map((r) => r.top));
-    return { left: l, top: t, width: Math.max(...rs.map((r) => r.right)) - l, height: Math.max(...rs.map((r) => r.bottom)) - t };
+    return { left: l, top: t, width: Math.max(...rs.map((r) => r.right)) - l, height: Math.max(...rs.map((r) => r.bottom)) - t, first: rs[0].left };
   }
   async function dataUrl(src) {
     if (/^data:image\/(png|jpeg|gif)[;,]/.test(src)) return src; // other inline pictures (webp, svg) are converted below
@@ -159,6 +159,8 @@ window.PPTExport = (() => {
       let left = b.left + (n(cs.borderLeftWidth) + n(cs.paddingLeft)) * k;
       const right = b.right - (n(cs.borderRightWidth) + n(cs.paddingRight)) * k;
       if (list === 'bullets') left -= 24 * k; // the pptx bullet indent (marL 24px): list text then starts where the page's does
+      const ind = !list && (paras[0].align === 'l' || paras[0].align === 'j') ? (r.first - left) / k : 0;
+      if (ind > 1) paras[0].indent = ind; // a leading badge or icon pushes the first line right; later lines start at the edge
       const lh = parseFloat(cs.lineHeight) || n(cs.fontSize) * 1.3;
       items.push({ k: 'text', ...rel({ left, top: r.top, width: Math.max(right - left, r.width), height: r.height }), wrap: paras.length > 1 || r.height / k > lh * 1.5, paras });
     };

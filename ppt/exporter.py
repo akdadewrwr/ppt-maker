@@ -69,12 +69,22 @@ def build(data, out):
         else:
             fill.background()
 
-    def set_line(line, hexv, w):
+    def set_line(line, hexv, w, a=1, dash=None):  # <a:ln> children in schema order: fill, prstDash, …, headEnd, tailEnd
         if hexv and w:
             line.color.rgb = rgb(hexv)
             line.width = Emu(E(w))
+            alpha(line.fill, a)
+            if dash:
+                ln = line._get_or_add_ln()
+                ln.find(qn("a:solidFill")).addnext(ln.makeelement(qn("a:prstDash"), {"val": dash}))
         else:
             line.fill.background()
+
+    def ends(line, start, end):  # arrowheads take the line's colour; size sm | med | lg
+        ln = line._get_or_add_ln()
+        for size, tag in ((start, "a:headEnd"), (end, "a:tailEnd")):
+            if size:
+                ln.append(ln.makeelement(qn(tag), {"type": "triangle", "w": size, "len": size}))
 
     def runs_into(para, p):
         para.alignment = ALIGN.get(p.get("align"))
@@ -123,14 +133,18 @@ def build(data, out):
 
     def add_text(s, it):
         tb = s.shapes.add_textbox(E(it["x"]), E(it["y"]), E(it["w"]), E(it["h"]))
+        tb.rotation = float(it.get("rot") or 0)
         text_into(tb.text_frame, it["paras"], wrap=it.get("wrap", True) is not False)
         return "text"
+
+    def corner(sh, it):  # a radius in px -> PowerPoint's rounding, a fraction of the shorter side
+        if it.get("r"):
+            sh.adjustments[0] = min(0.5, float(it["r"]) / max(1.0, min(float(it["w"]), float(it["h"]))))
 
     def add_box(s, it):
         kind = SHAPES["round"] if it.get("r") else SHAPES["rect"]
         sh = plain(s.shapes.add_shape(kind, E(it["x"]), E(it["y"]), E(it["w"]), E(it["h"])))
-        if it.get("r"):
-            sh.adjustments[0] = min(0.5, float(it["r"]) / max(1.0, min(float(it["w"]), float(it["h"]))))
+        corner(sh, it)
         set_fill(sh.fill, it.get("fill"), it.get("fa", 1))
         set_line(sh.line, it.get("line"), it.get("lw"))
         return "shape"
@@ -138,11 +152,50 @@ def build(data, out):
     def add_shape(s, it):
         sh = plain(s.shapes.add_shape(SHAPES[it["shape"]], E(it["x"]), E(it["y"]), E(it["w"]), E(it["h"])))
         sh.rotation = float(it.get("rot") or 0)
+        if it["shape"] == "round":
+            corner(sh, it)
         set_fill(sh.fill, it.get("fill"), it.get("fa", 1))
-        set_line(sh.line, it.get("line"), it.get("lw"))
+        set_line(sh.line, it.get("line"), it.get("lw"), it.get("la", 1), it.get("dash"))
         if it.get("paras"):
             text_into(sh.text_frame, it["paras"], middle=True)
         return "shape"
+
+    def add_path(s, it):  # an SVG path (absolute canvas px, M/L/C/Z) as a freeform: colours, size and place stay editable
+        segs = it.get("segs") or []
+        pts = [(float(v[i]), float(v[i + 1])) for v in segs if v[0] in "MLC" for i in range(1, len(v), 2)]
+        if len(pts) < 2:
+            raise ValueError("没有可画的路径")
+        x0, y0 = min(p[0] for p in pts), min(p[1] for p in pts)
+        w, h = max(1.0, max(p[0] for p in pts) - x0), max(1.0, max(p[1] for p in pts) - y0)
+        sh = plain(s.shapes.add_shape(SHAPES["rect"], E(x0), E(y0), E(w), E(h)))
+        spPr = sh._element.spPr
+        geom = spPr.makeelement(qn("a:custGeom"), {})
+        for tag in ("a:avLst", "a:gdLst", "a:ahLst", "a:cxnLst"):
+            geom.append(geom.makeelement(qn(tag), {}))
+        geom.append(geom.makeelement(qn("a:rect"), {"l": "0", "t": "0", "r": "r", "b": "b"}))
+        lst = geom.makeelement(qn("a:pathLst"), {})
+        path = lst.makeelement(qn("a:path"), {"w": str(E(w)), "h": str(E(h))})
+        if not it.get("fill") and not any(v[0] == "Z" for v in segs):
+            path.set("fill", "none")  # an open line; a filled open path is filled as if closed, like SVG
+        tags = {"M": "a:moveTo", "L": "a:lnTo", "C": "a:cubicBezTo", "Z": "a:close"}
+        for v in segs:
+            el = path.makeelement(qn(tags[v[0]]), {})
+            for i in range(1, len(v), 2):
+                el.append(el.makeelement(qn("a:pt"), {"x": str(E(float(v[i]) - x0)), "y": str(E(float(v[i + 1]) - y0))}))
+            path.append(el)
+        lst.append(path)
+        geom.append(lst)
+        spPr.replace(spPr.find(qn("a:prstGeom")), geom)
+        set_fill(sh.fill, it.get("fill"), it.get("fa", 1))
+        set_line(sh.line, it.get("line"), it.get("lw"), it.get("la", 1), it.get("dash"))
+        if it.get("line") and it.get("lw"):
+            ends(sh.line, it.get("start"), it.get("end"))
+        return "shape"
+
+    def add_group(s, it):  # one PowerPoint group per <svg>; a child that fails is skipped, the rest stay
+        grp = s.shapes.add_group_shape()
+        if not sum(place(grp, c) for c in it.get("items") or []):
+            grp._element.getparent().remove(grp._element)
 
     def add_line(s, it):
         c = plain(s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, E(it["x1"]), E(it["y1"]), E(it["x2"]), E(it["y2"])))
@@ -187,31 +240,37 @@ def build(data, out):
                 text_into(cell.text_frame, cd.get("paras"))
         return "table"
 
-    add = {"text": add_text, "box": add_box, "shape": add_shape, "line": add_line, "image": add_pic, "raster": add_pic, "table": add_table}
+    add = {"text": add_text, "box": add_box, "shape": add_shape, "line": add_line, "image": add_pic, "raster": add_pic, "table": add_table,
+           "path": add_path, "group": add_group}
     prs = Presentation()
     prs.slide_width, prs.slide_height = Emu(1280 * PX), Emu(720 * PX)
     blank = prs.slide_layouts[6]
     rep = {"slides": 0, "text": 0, "shape": 0, "table": 0, "image": 0, "raster": [], "skipped": list(data.get("skipped") or [])}
+
+    def place(container, it):  # the slide or a group: True when the item made it in
+        tree = container.shapes._spTree
+        n = len(tree)
+        try:
+            kind = add[it["k"]](container, it)
+        except Exception as e:  # noqa: BLE001 — one bad item (e.g. PIL's OSError on a non-image) must not sink the deck
+            for el in list(tree)[n:]:  # nor leave half of itself behind
+                tree.remove(el)
+            rep["skipped"].append({"id": it.get("id", ""), "why": f"无法生成：{e}"})
+            return False
+        if kind == "raster":
+            rep["raster"].append({"id": it.get("id", ""), "why": it.get("why", "")})
+        elif kind:  # a group counts its children, not itself
+            rep[kind] += 1
+        return len(tree) > n
+
     for sd in data["slides"]:
         s = prs.slides.add_slide(blank)
         rep["slides"] += 1
         if sd.get("bg"):
             s.background.fill.solid()
             s.background.fill.fore_color.rgb = rgb(sd["bg"])
-        tree = s.shapes._spTree
         for it in sd.get("items") or []:
-            n = len(tree)
-            try:
-                kind = add[it["k"]](s, it)
-            except Exception as e:  # noqa: BLE001 — one bad item (e.g. PIL's OSError on a non-image) must not sink the deck
-                for el in list(tree)[n:]:  # nor leave half of itself behind
-                    tree.remove(el)
-                rep["skipped"].append({"id": it.get("id", ""), "why": f"无法生成：{e}"})
-                continue
-            if kind == "raster":
-                rep["raster"].append({"id": it.get("id", ""), "why": it.get("why", "")})
-            else:
-                rep[kind] += 1
+            place(s, it)
     out = Path(out)
     tmp = out.with_name(f".{out.stem}-{secrets.token_hex(4)}.part")  # never shared by two exports
     try:

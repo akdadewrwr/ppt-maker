@@ -627,10 +627,83 @@ def sample_export():
         ]}], "skipped": [{"id": "b-ext", "why": "图片取不到"}]}
 
 
+def svg_group():  # what export.js measures from an inline <svg>: one group, children in document order
+    run = {"t": "框选", "size": 20, "color": "112233", "font": "Microsoft YaHei"}
+    return {"k": "group", "id": "b-fig", "items": [
+        {"k": "shape", "shape": "round", "id": "b-fig:rect1", "x": 100, "y": 100, "w": 200, "h": 100, "r": 10, "rot": 0,
+         "fill": "38bdf8", "fa": 0.5, "line": "112233", "la": 1, "lw": 3, "dash": "dash", "paras": []},
+        {"k": "path", "id": "b-fig:path2", "segs": [["M", 400, 100], ["C", 450, 50, 500, 150, 550, 100], ["L", 550, 200], ["Z"]],
+         "fill": "ff0000", "fa": 1, "line": None, "la": 1, "lw": 0, "dash": None, "start": None, "end": None},
+        {"k": "path", "id": "b-fig:line3", "segs": [["M", 100, 300], ["L", 500, 300]],
+         "fill": None, "fa": 1, "line": "4874cb", "la": 1, "lw": 2, "dash": None, "start": None, "end": "med"},
+        {"k": "text", "id": "b-fig:text4", "x": 100, "y": 400, "w": 120, "h": 30, "rot": 15, "wrap": False, "paras": [{"align": "c", "runs": [run]}]},
+        {"k": "raster", "id": "b-fig:image5", "x": 600, "y": 100, "w": 50, "h": 50, "src": "data:image/png;base64," + PNG_1PX, "why": "SVG 里的图片"},
+    ]}
+
+
 class ExporterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_an_svg_group_becomes_one_editable_group(self):
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+        E = exporter.E
+        out = self.tmp / "g.pptx"
+        rep = exporter.build({"slides": [{"id": "s", "bg": None, "items": [svg_group()]}]}, out)
+        self.assertEqual({k: rep[k] for k in ("text", "shape", "image")}, {"text": 1, "shape": 3, "image": 0})
+        self.assertEqual(rep["raster"], [{"id": "b-fig:image5", "why": "SVG 里的图片"}])
+        shapes = Presentation(str(out)).slides[0].shapes
+        self.assertEqual(len(shapes), 1)
+        g = shapes[0]
+        self.assertEqual(g.shape_type, MSO_SHAPE_TYPE.GROUP)
+        kids = list(g.shapes)
+        self.assertEqual(len(kids), 5)  # document order kept
+        rect, path, line, text, pic = kids
+        self.assertEqual((rect.left, rect.top, rect.width), (E(100), E(100), E(200)))
+        self.assertAlmostEqual(rect.adjustments[0], 0.1, places=3)  # 10 / min(200, 100)
+        self.assertIn('<a:alpha val="50000"/>', rect._element.xml)
+        self.assertIn('<a:prstDash val="dash"/>', rect._element.xml)
+        self.assertIn("<a:custGeom>", path._element.xml)
+        self.assertIn("<a:cubicBezTo>", path._element.xml)
+        self.assertIn("<a:close/>", path._element.xml)
+        self.assertEqual((path.left, path.top, path.width, path.height), (E(400), E(50), E(150), E(150)))  # frame = bounds of all points
+        self.assertIn('<a:tailEnd type="triangle" w="med" len="med"/>', line._element.xml)
+        self.assertNotIn("headEnd", line._element.xml)
+        self.assertIn('fill="none"', line._element.xml)  # open path: <a:path … fill="none">
+        self.assertEqual((text.text_frame.text, text.rotation, text.text_frame.word_wrap), ("框选", 15.0, False))
+        self.assertEqual(pic.shape_type, MSO_SHAPE_TYPE.PICTURE)
+
+    def test_svg_shapes_xml_is_in_schema_order(self):  # PowerPoint repairs out-of-order spPr / ln children
+        from pptx import Presentation
+        from pptx.oxml.ns import qn
+        exporter.build({"slides": [{"id": "s", "bg": None, "items": [svg_group()]}]}, self.tmp / "o.pptx")
+        g = Presentation(str(self.tmp / "o.pptx")).slides[0].shapes[0]
+        order = ["noFill", "solidFill", "prstDash", "round", "headEnd", "tailEnd"]
+        for sh in list(g.shapes)[:3]:
+            sp = [c.tag.split("}")[1] for c in sh._element.spPr]
+            self.assertEqual(sp[:2], ["xfrm", "custGeom" if "custGeom" in sp else "prstGeom"], sp)
+            tags = [c.tag.split("}")[1] for c in sh._element.spPr.find(qn("a:ln"))]
+            self.assertEqual(tags, sorted(tags, key=order.index), tags)
+        cg = list(g.shapes)[1]._element.spPr.find(qn("a:custGeom"))
+        self.assertEqual([c.tag.split("}")[1] for c in cg], ["avLst", "gdLst", "ahLst", "cxnLst", "rect", "pathLst"])
+
+    def test_a_bad_child_is_skipped_and_the_group_kept(self):
+        from pptx import Presentation
+        grp = svg_group()
+        grp["items"].insert(1, {"k": "path", "id": "b-fig:bad", "segs": [["M", 1, 1]], "fill": "000000"})  # one point: nothing to draw
+        grp["items"].insert(1, {"k": "nope", "id": "b-fig:odd"})
+        rep = exporter.build({"slides": [{"id": "s", "bg": None, "items": [grp]}]}, self.tmp / "b.pptx")
+        self.assertEqual([s["id"] for s in rep["skipped"]], ["b-fig:odd", "b-fig:bad"])
+        self.assertEqual(len(list(Presentation(str(self.tmp / "b.pptx")).slides[0].shapes[0].shapes)), 5)
+
+    def test_a_group_with_no_child_left_leaves_nothing(self):
+        from pptx import Presentation
+        grp = {"k": "group", "id": "b-e", "items": [{"k": "path", "id": "b-e:p", "segs": []}]}
+        rep = exporter.build({"slides": [{"id": "s", "bg": None, "items": [grp]}]}, self.tmp / "e.pptx")
+        self.assertEqual(len(Presentation(str(self.tmp / "e.pptx")).slides[0].shapes), 0)
+        self.assertEqual([s["id"] for s in rep["skipped"]], ["b-e:p"])
 
     def test_build_makes_editable_native_objects(self):
         from pptx import Presentation

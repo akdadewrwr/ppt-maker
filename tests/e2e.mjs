@@ -754,6 +754,18 @@ try {
   <div class="block" id="b-ex-long" style="grid-area:6/14/9/17;padding:20px;font-size:20px">这一段文字很长很长，在窄窄的块里一定会折成好几行才能放下<span style="display:none">不该出现</span><span style="visibility:hidden">也不该</span></div>
   <div class="block" id="b-ex-plain" style="grid-area:1/12/3/14"><ul style="margin:0;list-style:none;font-size:18px"><li>无符号</li></ul></div>
   <div class="block" id="b-ex-font" style="grid-area:9/2/10/8;font-family:Inter,'PingFang SC',sans-serif;font-size:18px">Inter 加中文</div>
+  <div class="block" id="b-ex-fig" style="grid-area:9/9/10/17;color:#334455"><svg viewBox="0 0 400 100" width="640" height="80">
+    <defs><marker id="m-ex" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#999"/></marker>
+      <linearGradient id="g-ex"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient></defs>
+    <rect x="10" y="10" width="80" height="40" rx="6" style="fill:#38bdf8;fill-opacity:.5;stroke:#123456;stroke-width:2;stroke-dasharray:8 6"/>
+    <circle cx="130" cy="30" r="20" fill="#ff0000"/>
+    <line x1="160" y1="30" x2="230" y2="30" stroke="#4874cb" stroke-width="3" marker-end="url(#m-ex)"/>
+    <path d="M240 50 Q260 0 280 50 Z" fill="#00aa00"/>
+    <text x="330" y="40" text-anchor="middle" style="font-size:20px;fill:#112233">框选</text>
+    <rect x="360" y="10" width="30" height="30" fill="url(#g-ex)"/>
+    <circle cx="5" cy="5" r="3" style="display:none"/>
+  </svg></div>
+  <div class="obj" id="o-ex-icon" data-kind="icon" style="left:40px;top:640px;width:48px;height:48px;color:#ef4444;stroke-width:2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12h16"/></svg></div>
 </section>
 <section class="slide" id="s-export-bg" style="background:linear-gradient(90deg,#ffffff,#eeeeee)">
   <div class="block" id="b-bg-svg" style="grid-area:3/3/6/6"><svg viewBox="0 0 10 10" width="200" height="200"><circle cx="5" cy="5" r="5" fill="#ff0000"/></svg></div>
@@ -783,9 +795,30 @@ try {
     im.src = bg.src; }))`);
   check('X the page-background picture does not contain the foreground pictures', redInBg === 'clean', redInBg);
   const kinds = ms.slides[0].items.map((i) => i.k);
-  check('X the measure has native text, box, table, shape, line and a raster for the svg',
-    ['text', 'box', 'table', 'shape', 'line', 'raster'].every((k) => kinds.includes(k)) && ms.slides[0].items.find((i) => i.k === 'raster').id === 'b-ex-svg'
+  const exSvg = ms.slides[0].items.find((i) => i.id === 'b-ex-svg');
+  check('X the measure has native text, box, table, shape, line and a group for the svg',
+    ['text', 'box', 'table', 'shape', 'line', 'group'].every((k) => kinds.includes(k)) && exSvg?.k === 'group' && exSvg.items.map((i) => i.k + ':' + i.id.split(':')[1]).join() === 'shape:circle1'
     && ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].bullet === '•'), kinds.join() + ' ' + JSON.stringify(ms.skipped));
+  const fig = ms.slides[0].items.find((i) => i.k === 'group' && i.id === 'b-ex-fig');
+  const fk = fig ? fig.items.map((i) => i.k + ':' + i.id.split(':')[1]) : [];
+  check('X an svg illustration becomes one group of editable items, in document order', fk.join() === 'shape:rect1,shape:circle2,path:line3,path:path4,text:text5,raster:rect6', fk.join());
+  const fx0 = await ev(`(() => { const s = document.getElementById('s-export'), k = s.getBoundingClientRect().width / 1280, r = document.querySelector('#b-ex-fig svg').getBoundingClientRect(); return (r.left - s.getBoundingClientRect().left) / k; })()`);
+  const rect1 = fig?.items[0];
+  check('X svg items land where the page draws them (viewBox scale and meet offset)', rect1 && Math.abs(rect1.x - (fx0 + 160 + 8)) < 1 && Math.abs(rect1.w - 64) < 1 && Math.abs(rect1.r - 4.8) < 0.1, JSON.stringify([fx0, rect1]));
+  check('X svg styles: colour, opacity, dash, round corner', rect1?.fill === '38bdf8' && Math.abs(rect1.fa - 0.5) < 0.01 && rect1.line === '123456' && rect1.dash === 'dash' && Math.abs(rect1.lw - 1.6) < 0.05, JSON.stringify(rect1));
+  const ln3 = fig?.items[2];
+  check('X a marker becomes an arrow end in the line colour', ln3?.end === 'med' && !ln3.start && ln3.line === '4874cb', JSON.stringify(ln3));
+  check('X a quadratic path is exported as cubic segments', fig?.items[3]?.segs?.map((s) => s[0]).join('') === 'MCZ', JSON.stringify(fig?.items[3]?.segs));
+  const tx5 = fig?.items[4];
+  check('X svg text is an editable text box with its fill colour, scaled size and anchor', tx5?.paras?.[0].runs[0].t === '框选' && tx5.paras[0].runs[0].color === '112233' && Math.abs(tx5.paras[0].runs[0].size - 16) < 0.1 && tx5.paras[0].align === 'c' && tx5.wrap === false, JSON.stringify(tx5));
+  check('X only the gradient element is a picture, and the report says why', fig?.items[5]?.why === '渐变或图案' && fig.items[5].src?.startsWith('data:image/png'), JSON.stringify(fig?.items[5]?.why));
+  const icon = ms.slides[0].items.find((i) => i.k === 'group' && i.id === 'o-ex-icon');
+  check('X an icon exports as an editable line in the text colour, no fill', icon?.items.length === 1 && icon.items[0].k === 'path' && icon.items[0].line === 'ef4444' && icon.items[0].fill === null, JSON.stringify(icon));
+  const failed = JSON.parse(await ev(`(async () => { const real = htmlToImage.toCanvas; htmlToImage.toCanvas = () => Promise.reject(new Error('boom'));
+    try { return JSON.stringify(await PPTExport.measure([document.getElementById('s-export')])); } finally { htmlToImage.toCanvas = real; } })()`));
+  const fItems = failed.slides[0].items;
+  check('X a failed picture cut drops only that picture, from its own group', fItems.find((i) => i.id === 'b-ex-fig')?.items.length === 5
+    && fItems.length === ms.slides[0].items.filter((i) => i.k !== 'raster').length && failed.skipped.some((s) => s.id === 'b-ex-fig:rect6'), JSON.stringify([fItems.length, failed.skipped]));
   const xbox = ms.slides[0].items.find((i) => i.k === 'text' && i.paras[0].runs[0]?.t === '框里的字');
   check('X a one-line text does not wrap, and its box spans the block content width', xt1.wrap === false && xbox && Math.abs(xbox.w - (6 * 80 - 16)) < 2,
     JSON.stringify([xt1.wrap, xbox?.x, xbox?.w]));

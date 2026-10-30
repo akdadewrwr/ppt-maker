@@ -15,7 +15,9 @@ window.PPTExport = (() => {
   const blockish = (el) => { const d = getComputedStyle(el).display; return d !== 'inline' && d !== 'contents' && d !== 'none'; };
   const idOf = (el) => el.closest('[id]')?.id || el.tagName.toLowerCase();
   function rasterWhy(el, cs) {
-    if (RASTER_TAGS[el.tagName.toUpperCase()]) return RASTER_TAGS[el.tagName.toUpperCase()];
+    return RASTER_TAGS[el.tagName.toUpperCase()] || cssWhy(cs);
+  }
+  function cssWhy(cs) { // what PowerPoint can't draw natively, whatever the element
     if (cs.backgroundImage !== 'none') return '渐变或背景图';
     if (cs.boxShadow !== 'none') return '阴影';
     if (cs.transform !== 'none') return '旋转或变形';
@@ -160,7 +162,101 @@ window.PPTExport = (() => {
       const lh = parseFloat(cs.lineHeight) || n(cs.fontSize) * 1.3;
       items.push({ k: 'text', ...rel({ left, top: r.top, width: Math.max(right - left, r.width), height: r.height }), wrap: paras.length > 1 || r.height / k > lh * 1.5, paras });
     };
-    const raster = (el, why, pad = 0) => { const g = rel(el.getBoundingClientRect()); const it = { k: 'raster', x: g.x - pad, y: g.y - pad, w: g.w + 2 * pad, h: g.h + 2 * pad, id: idOf(el), why }; items.push(it); rasters.push([el, it]); };
+    const raster = (el, why, pad = 0, list = items, id = idOf(el)) => { // list: the page's items, or an svg group's
+      const g = rel(el.getBoundingClientRect()); const it = { k: 'raster', x: g.x - pad, y: g.y - pad, w: g.w + 2 * pad, h: g.h + 2 * pad, id, why };
+      list.push(it); rasters.push([el, it, list]);
+    };
+    // An inline <svg> becomes one group of native items in canvas px: each element is mapped by its screen CTM, so viewBox
+    // scaling, meet offsets and transforms all come out right. Only what PowerPoint can't draw becomes a picture, alone.
+    const SVG_SKIP = new Set(['defs', 'marker', 'symbol', 'clipPath', 'mask', 'pattern', 'linearGradient', 'radialGradient', 'filter', 'style', 'title', 'desc', 'metadata', 'script']);
+    const ANCHOR = { middle: 'c', end: 'r' };
+    function svgGroup(svg, id) {
+      const kids = [], nr = rasters.length, S = new DOMMatrix([1 / k, 0, 0, 1 / k, -sr.left / k, -sr.top / k]);
+      let seq = 0;
+      const opacity = (el) => { let o = 1; for (let e = el; e && e !== svg.parentElement; e = e.parentElement) o *= parseFloat(getComputedStyle(e).opacity); return o; };
+      const arrow = (v, sw) => { // a marker -> sm | med | lg; it takes the line's colour (the user's call)
+        const m = /url\(["']?#([^"')]+)/.exec(v || ''), mk = m && document.getElementById(m[1]);
+        if (!mk) return v && v !== 'none' ? 'med' : null;
+        let w = mk.markerWidth?.baseVal.value ?? 3;
+        if (mk.getAttribute('markerUnits') === 'userSpaceOnUse') w /= sw || 1;
+        return w <= 2.5 ? 'sm' : w <= 4 ? 'med' : 'lg';
+      };
+      const paint = (el, cs, m) => {
+        const op = opacity(el), f = col(cs.fill), s = col(cs.stroke), sw = parseFloat(cs.strokeWidth) || 0;
+        const lw = s && sw ? (cs.vectorEffect === 'non-scaling-stroke' ? sw / k : sw * Math.sqrt(Math.abs(m.a * m.d - m.b * m.c))) : 0;
+        const d = parseFloat(cs.strokeDasharray), r = d / (sw || 1);
+        return { fill: f?.hex || null, fa: f ? f.a * op * parseFloat(cs.fillOpacity) : 1, line: lw ? s.hex : null, la: s ? s.a * op * parseFloat(cs.strokeOpacity) : 1, lw,
+          dash: lw && d > 0 ? (r <= 1.5 ? 'sysDot' : r <= 3.5 ? 'sysDash' : 'dash') : null };
+      };
+      const frame = (m, bb) => { // a box in user units -> centre, size and rotation in canvas px; null when it is skewed
+        const sx = Math.hypot(m.a, m.b), sy = Math.hypot(m.c, m.d);
+        if (Math.abs(m.a * m.c + m.b * m.d) > 1e-6 * sx * sy) return null;
+        const c = m.transformPoint(new DOMPoint(bb.x + bb.width / 2, bb.y + bb.height / 2)), w = bb.width * sx, h = bb.height * sy;
+        return { x: c.x - w / 2, y: c.y - h / 2, w, h, sx, sy, rot: Math.atan2(m.b, m.a) * 180 / Math.PI };
+      };
+      const textItem = (el, cs, m, uid) => {
+        const f = frame(m, el.getBBox());
+        if (!f) throw new Error('skewed text'); // ponytail: skewed text is rare; it becomes a picture via the catch
+        const runs = [], op = opacity(el);
+        (function collect(node, first) {
+          for (const n of node.childNodes) {
+            if (n.nodeType === 3) {
+              const pcs = getComputedStyle(n.parentElement), t = n.data.replace(/\s+/g, ' '), c = col(pcs.fill);
+              if (t && pcs.visibility !== 'hidden') runs.push({ ...run(t, pcs), color: c?.hex || '000000', a: (c?.a ?? 1) * op * parseFloat(pcs.fillOpacity), size: parseFloat(pcs.fontSize) * f.sy });
+            } else if (n.localName === 'tspan' && getComputedStyle(n).display !== 'none') {
+              if (runs.length && ['x', 'y', 'dy'].some((a) => n.hasAttribute(a))) runs.push({ br: true }); // a tspan placed on its own line
+              collect(n);
+            }
+          }
+        })(el);
+        while (runs.length && runs[0].t !== undefined && !runs[0].t.trim()) runs.shift();
+        if (runs[0]?.t) runs[0].t = runs[0].t.trimStart();
+        if (runs.at(-1)?.t) runs.at(-1).t = runs.at(-1).t.trimEnd();
+        if (!runs.some((r) => r.t)) return;
+        kids.push({ k: 'text', id: uid, x: f.x, y: f.y, w: f.w, h: f.h, rot: f.rot, wrap: false,
+          paras: [{ align: ANCHOR[cs.textAnchor] || 'l', lh: null, bullet: '', level: 0, runs: runs.filter((r) => r.br || r.t) }] });
+      };
+      const pathItem = (el, cs, m, uid, segs) => {
+        const p = paint(el, cs, m), sw = parseFloat(cs.strokeWidth) || 0;
+        const at = (x, y) => { const q = m.transformPoint(new DOMPoint(x, y)); return [q.x, q.y]; };
+        kids.push({ k: 'path', id: uid, segs: segs.map((s) => [s[0], ...s.slice(1).reduce((o, v, i, a) => (i % 2 ? o : o.concat(at(v, a[i + 1]))), [])]),
+          ...p, start: p.line ? arrow(cs.markerStart, sw) : null, end: p.line ? arrow(cs.markerEnd, sw) : null });
+      };
+      function one(el) {
+        const tag = el.localName;
+        if (SVG_SKIP.has(tag)) return;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || opacity(el) === 0) return;
+        const own = cs.filter !== 'none' ? '滤镜' : cs.clipPath !== 'none' ? '裁切形状' : (el.hasAttribute('mask') || (cs.maskImage && cs.maskImage !== 'none')) ? '蒙版' : '';
+        if (['g', 'a', 'svg'].includes(tag) && !own) { for (const c of el.children) one(c); return; }
+        const uid = `${id}:${tag}${++seq}`;
+        try {
+          if (own) return raster(el, own, 0, kids, uid);
+          if (/^url/.test(cs.fill) || /^url/.test(cs.stroke)) return raster(el, '渐变或图案', 0, kids, uid);
+          const m = S.multiply(DOMMatrix.fromMatrix(el.getScreenCTM()));
+          if (tag === 'rect' || tag === 'circle' || tag === 'ellipse') {
+            const f = frame(m, el.getBBox()), r = tag === 'rect' ? (el.rx.animVal.value || el.ry.animVal.value) : 0;
+            if (!f || (r && Math.abs(f.sx - f.sy) > 1e-6 * f.sx)) return raster(el, '变形', 0, kids, uid);
+            if (!f.w || !f.h) return;
+            kids.push({ k: 'shape', shape: tag === 'rect' ? (r ? 'round' : 'rect') : 'ellipse', id: uid, x: f.x, y: f.y, w: f.w, h: f.h, r: r * f.sx, rot: f.rot, ...paint(el, cs, m), paras: [] });
+          } else if (tag === 'line') {
+            const v = (a) => el[a].animVal.value;
+            pathItem(el, cs, m, uid, [['M', v('x1'), v('y1')], ['L', v('x2'), v('y2')]]);
+          } else if (tag === 'polyline' || tag === 'polygon') {
+            const pts = [...el.points].map((p, i) => [i ? 'L' : 'M', p.x, p.y]);
+            if (pts.length > 1) pathItem(el, cs, m, uid, tag === 'polygon' ? [...pts, ['Z']] : pts);
+          } else if (tag === 'path') {
+            const segs = pathSegs(el.getAttribute('d'));
+            if (segs.length > 1) pathItem(el, cs, m, uid, segs);
+          } else if (tag === 'text' && !el.querySelector('textPath')) textItem(el, cs, m, uid);
+          else raster(el, `SVG 里的${tag}`, 0, kids, uid);
+        } catch { raster(el, '测量出错', 0, kids, uid); }
+      }
+      for (const c of svg.children) one(c);
+      if (!kids.length) return;
+      if (kids.every((i) => i.k === 'raster')) { rasters.length = nr; return raster(svg, 'SVG 插图'); } // nothing native: one picture, as before
+      items.push({ k: 'group', id, items: kids });
+    }
     function obj(el) {
       const cs = getComputedStyle(el), kind = el.dataset.kind, shape = el.dataset.shape;
       const g = { x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0, w: parseFloat(el.style.width) || 0, h: parseFloat(el.style.height) || 0 };
@@ -177,6 +273,8 @@ window.PPTExport = (() => {
           start: shape === 'arrow2', end: shape === 'arrow' || shape === 'arrow2' });
       } else if (kind === 'image' && el.querySelector('img')) {
         image(el.querySelector('img'), g);
+      } else if ((kind === 'icon' || kind === 'ink') && el.querySelector(':scope > svg') && !cssWhy(cs)) {
+        svgGroup(el.querySelector(':scope > svg'), idOf(el));
       } else raster(el, kind === 'icon' ? '图标' : kind === 'ink' ? '笔迹' : '对象');
     }
     function image(img, g = rel(img.getBoundingClientRect())) {
@@ -211,6 +309,7 @@ window.PPTExport = (() => {
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden') return;
       if (el.classList.contains('obj')) return obj(el);
+      if (el.localName === 'svg' && !cssWhy(cs)) return svgGroup(el, idOf(el));
       const why = rasterWhy(el, cs);
       if (why) return raster(el, why, cs.boxShadow !== 'none' ? 16 : 0);
       if (el.tagName === 'TABLE') return table(el);
@@ -228,9 +327,9 @@ window.PPTExport = (() => {
     let bg = sbg ? sbg.hex : 'ffffff';
     if (scs.backgroundImage !== 'none') { // gradient or picture behind the page: one picture at the very bottom
       const it = { k: 'raster', x: 0, y: 0, w: W, h: H, id: slide.id, why: '页面背景' };
-      items.unshift(it); rasters.push([null, it]);
+      items.unshift(it); rasters.push([null, it, items]);
     }
-    if (rasters.length) await cut(slide, rasters, skipped, items);
+    if (rasters.length) await cut(slide, rasters, skipped);
     await Promise.all(pending);
     return { id: slide.id, bg, items };
   }
@@ -245,7 +344,7 @@ window.PPTExport = (() => {
     }
     finally { delete slide.dataset.pptX; st.remove(); }
   }
-  async function cut(slide, rasters, skipped, items) {
+  async function cut(slide, rasters, skipped) {
     const marked = rasters.filter(([el]) => el);
     marked.forEach(([el]) => { el.dataset.pptX = 'r'; });
     try {
@@ -256,8 +355,8 @@ window.PPTExport = (() => {
         c.getContext('2d').drawImage(src, it.x * 2, it.y * 2, c.width, c.height, 0, 0, c.width, c.height);
         it.src = c.toDataURL('image/png');
       }
-    } catch (e) {
-      for (const [, it] of rasters) { items.splice(items.indexOf(it), 1); skipped.push({ id: it.id, why: `转图片失败：${e.message || e}` }); }
+    } catch (e) { // each picture leaves the list it sits in: the page's, or an svg group's
+      for (const [, it, list] of rasters) { list.splice(list.indexOf(it), 1); skipped.push({ id: it.id, why: `转图片失败：${e.message || e}` }); }
     } finally { marked.forEach(([el]) => { delete el.dataset.pptX; }); }
   }
   async function measure(slides) {

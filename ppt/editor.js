@@ -550,6 +550,7 @@
     if (exporting) return;
     exporting = true; tb.setExporting(true); select(null); closePop();
     try {
+      if (editing) await endEdit(); // the toolbar button keeps focus off itself, so nothing else ends the typing first
       const data = await PPTExport.measure(slides());
       const r = await fetch(api('/api/export'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
       const d = await r.json().catch(() => ({}));

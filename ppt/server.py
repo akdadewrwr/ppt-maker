@@ -788,13 +788,21 @@ def server_file(deck):
 
 
 def live_server(deck):
-    """The running server of this deck ({pid, port, url, token}), or None. Asks it, so a stale file never counts."""
+    """The running server of this deck ({pid, port, url, token}), or None. Asks it, so a stale file never counts.
+    One that takes the connection but is too slow to answer (a machine short of memory) is still running.
+    Connecting gets 5 s: Windows takes about 2 s to say nothing is listening, which must not look like a slow answer."""
     try:
         info = json.loads(server_file(deck).read_text(encoding="utf-8"))
-        c = http.client.HTTPConnection("127.0.0.1", int(info["port"]), timeout=2)
-        c.request("GET", f"/api/state?t={info['token']}", headers={"Host": f"127.0.0.1:{info['port']}"})
-        ok = c.getresponse().status == 200
-        c.close()
+        c = http.client.HTTPConnection("127.0.0.1", int(info["port"]), timeout=5)
+        c.connect()
+        c.sock.settimeout(2)
+        try:
+            c.request("GET", f"/api/state?t={info['token']}", headers={"Host": f"127.0.0.1:{info['port']}"})
+            ok = c.getresponse().status == 200
+        except TimeoutError:
+            ok = True
+        finally:
+            c.close()
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
         return None
     return info if ok else None

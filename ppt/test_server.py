@@ -335,6 +335,24 @@ class DetachTests(unittest.TestCase):  # the server runs on its own, not as a Cl
         c.close()
         return status
 
+    def test_a_server_too_busy_to_answer_still_counts_as_running(self):  # a slow machine made --tail say "stopped" and --detach start a second server
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(8)  # takes the connection, never answers
+        self.addCleanup(busy.close)
+        server.ensure_deck(self.deck)
+        info = {"pid": 2 ** 30, "port": busy.getsockname()[1], "url": "http://busy", "token": "t"}  # no such process: tearDown's --stop must not kill anything real
+        server.server_file(self.deck).write_text(json.dumps(info), encoding="utf-8")
+        self.addCleanup(server.server_file(self.deck).unlink, missing_ok=True)
+        self.assertEqual(server.live_server(self.deck), info)
+        self.assertIs(server.server_up(self.deck), True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            server.detach(self.deck, 8841, False)
+        self.assertIn("已在运行", out.getvalue())
+        busy.close()  # nothing listening any more: that one is gone
+        self.assertIsNone(server.live_server(self.deck))
+
     def test_detach_outlives_the_launcher_is_reused_and_stops(self):
         r1 = self.run_cli("--detach", "--no-open", "--port", "8840", str(self.deck))  # returns: the launcher has exited
         self.assertEqual(r1.returncode, 0, r1.stderr)

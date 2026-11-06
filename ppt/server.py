@@ -33,6 +33,8 @@ FIELD_TYPES = {"type": str, "kind": str, "re": str, "slide": int, "slide_id": st
 HEARTBEAT_SECS = 10
 IDLE_SECS = 2 * 3600  # a server nobody has visited for this long exits on its own
 SERVER_CHECK_SECS = 5
+CODE_CHECK_SECS = 2  # how often a running server looks for an update of its own code
+RESTART_GRACE = 30  # a server restarting on new code counts as running this long
 RECENT_DONE = 10
 STOPPED = "服务已停止：重新运行 --detach 启动，再把网址告诉用户"
 ONLINE_SECS = 30
@@ -764,7 +766,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
-    allow_reuse_address = False  # ponytail: on Windows reuse lets two servers share one port
+    allow_reuse_address = os.name != "nt"  # Windows: reuse lets two servers share one port; elsewhere it only lets a restart take its port back at once
     daemon_threads = True
 
     def server_close(self):
@@ -808,19 +810,32 @@ def live_server(deck):
     return info if ok else None
 
 
+def restarting(deck):
+    """The server said it is restarting on new code, recently enough that the new one may still be starting."""
+    try:
+        since = float(json.loads(server_file(deck).read_text(encoding="utf-8")).get("restarting", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return time.time() - since < RESTART_GRACE
+
+
+def wait_restart(deck):
+    """The server that comes up after a restart on new code, or None."""
+    while restarting(deck):
+        info = live_server(deck)
+        if info:
+            return info
+        time.sleep(0.25)
+    return live_server(deck)
+
+
 def server_up(deck):
-    """None: no server recorded; True / False: recorded and answering / gone."""
-    return None if not server_file(deck).exists() else live_server(deck) is not None
+    """None: no server recorded; True / False: recorded and answering / gone. Restarting on new code counts as up."""
+    return None if not server_file(deck).exists() else live_server(deck) is not None or restarting(deck)
 
 
-def detach(deck, port, open_browser):
-    """Start the server as its own process (not a child Claude Code can reap), or reuse the one already running."""
-    info = live_server(deck)
-    if info:
-        return print(f"ppt-maker 已在运行 {deck.name}: {info['url']}", flush=True)
-    if ensure_deck(deck):
-        print(f"已从模板新建 {deck / 'deck.html'}", flush=True)
-    server_file(deck).unlink(missing_ok=True)
+def spawn(deck, port):
+    """Run the server as its own process (not a child Claude Code can reap)."""
     cmd = [sys.executable, str(Path(__file__).resolve()), "--no-open", "--port", str(port), str(deck)]
     with (runtime(deck) / "server.log").open("ab") as log:
         opts = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
@@ -832,6 +847,17 @@ def detach(deck, port, open_browser):
                 subprocess.Popen(cmd, creationflags=flags, **opts)
         else:
             subprocess.Popen(cmd, start_new_session=True, **opts)
+
+
+def detach(deck, port, open_browser):
+    """Start the server as its own process, or reuse the one already running."""
+    info = live_server(deck) or wait_restart(deck)
+    if info:
+        return print(f"ppt-maker 已在运行 {deck.name}: {info['url']}", flush=True)
+    if ensure_deck(deck):
+        print(f"已从模板新建 {deck / 'deck.html'}", flush=True)
+    server_file(deck).unlink(missing_ok=True)
+    spawn(deck, port)
     for _ in range(60):
         info = live_server(deck)
         if info:
@@ -845,7 +871,7 @@ def detach(deck, port, open_browser):
 
 
 def stop_server(deck):
-    info = live_server(deck)
+    info = live_server(deck) or wait_restart(deck)
     if info:
         os.kill(int(info["pid"]), signal.SIGTERM)  # Windows: TerminateProcess
         for _ in range(40):
@@ -912,7 +938,50 @@ def idle_exit(srv, idle):
             return
 
 
-def make_server(deck, port=8765, token=None, tries=20, idle=IDLE_SECS):
+def code_files():
+    """The Python this server runs. Page scripts and the template are read from disk on every request."""
+    return [Path(m.__file__).resolve() for m in (sys.modules[__name__], exporter, importer, kb)]
+
+
+def stamp(files):
+    out = []
+    for f in files:
+        try:
+            out.append(os.stat(f).st_mtime_ns)
+        except OSError:
+            out.append(None)
+    return out
+
+
+def compiles(files):
+    try:
+        for f in files:
+            compile(Path(f).read_bytes(), str(f), "exec")
+        return True
+    except (OSError, SyntaxError, ValueError):
+        return False
+
+
+def code_watch(srv, interval):
+    """Stop serving once the code on disk has changed, stayed put for one check and compiles; main() then starts the new code.
+    An update must not leave the old exporter running next to the page's new scripts (it skipped what it did not know)."""
+    base = last = stamp(srv.code)
+    warned = None
+    while not srv.stopped.wait(interval):
+        now = stamp(srv.code)
+        if now != base and now == last:
+            if compiles(srv.code):
+                print("代码已更新，换新代码重启", flush=True)
+                srv.restart = True
+                srv.shutdown()
+                return
+            if warned != now:
+                print("代码已更新但有语法错误，先不重启", flush=True)
+                warned = now
+        last = now
+
+
+def make_server(deck, port=8765, token=None, tries=20, idle=IDLE_SECS, code=None, code_check=CODE_CHECK_SECS):
     for p in range(port, port + tries):
         try:
             srv = Server(("127.0.0.1", p), Handler)
@@ -934,6 +1003,9 @@ def make_server(deck, port=8765, token=None, tries=20, idle=IDLE_SECS):
     threading.Thread(target=watch, args=(srv,), daemon=True).start()
     srv.last_seen = time.time()
     threading.Thread(target=idle_exit, args=(srv, idle), daemon=True).start()
+    srv.code, srv.restart = code or [], False
+    if srv.code:
+        threading.Thread(target=code_watch, args=(srv, code_check), daemon=True).start()
     return srv
 
 
@@ -1062,7 +1134,7 @@ def main(argv=None):
         print(f"已从模板新建 {deck / 'deck.html'}", flush=True)
     if a.detach:
         return detach(deck, a.port, not a.no_open)
-    srv = make_server(deck, a.port)
+    srv = make_server(deck, a.port, code=code_files())
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.token}"
     me = {"pid": os.getpid(), "port": srv.server_address[1], "url": url, "token": srv.token}
     server_file(deck).write_text(json.dumps(me), encoding="utf-8")
@@ -1075,9 +1147,14 @@ def main(argv=None):
         srv.server_close()
         try:
             if json.loads(server_file(deck).read_text(encoding="utf-8")).get("pid") == me["pid"]:
-                server_file(deck).unlink()
+                if srv.restart:  # the new process overwrites this; until then --tail and --detach wait for it
+                    server_file(deck).write_text(json.dumps({**me, "restarting": time.time()}), encoding="utf-8")
+                else:
+                    server_file(deck).unlink()
         except (OSError, ValueError):
             pass
+    if srv.restart:
+        spawn(deck, me["port"])  # same port and token: the URL and open tabs keep working
 
 
 if __name__ == "__main__":

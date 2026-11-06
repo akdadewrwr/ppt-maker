@@ -380,6 +380,72 @@ class DetachTests(unittest.TestCase):  # the server runs on its own, not as a Cl
         srv.server_close()
         self.assertFalse(t.is_alive())
 
+    def code_server(self, code):
+        server.ensure_deck(self.deck)
+        srv = server.make_server(self.deck, port=0, token="tok", code=[code], code_check=0.05)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        self.addCleanup(srv.server_close)
+        return srv, t
+
+    def edit(self, f, text):
+        f.write_text(text, encoding="utf-8")
+        st = f.stat()
+        os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))  # a coarse clock must still see the change
+
+    def test_a_server_restarts_when_its_code_changes(self):  # an update left the old exporter running next to the page's new scripts: 8 drawings were skipped
+        code = self.proj / "mod.py"
+        code.write_text("x = 1\n", encoding="utf-8")
+        srv, t = self.code_server(code)
+        _time.sleep(0.3)
+        self.assertTrue(t.is_alive())  # nothing changed, keeps serving
+        self.edit(code, "x = 2\n")
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(srv.restart)
+
+    def test_broken_code_does_not_take_the_server_down(self):  # a half-saved file must not stop the page
+        code = self.proj / "mod.py"
+        code.write_text("x = 1\n", encoding="utf-8")
+        srv, t = self.code_server(code)
+        self.edit(code, "def (\n")
+        t.join(0.6)
+        self.assertTrue(t.is_alive())
+        self.assertFalse(srv.restart)
+        self.edit(code, "x = 3\n")
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(srv.restart)
+
+    def test_a_restarting_server_still_counts_as_up_for_a_while(self):  # --tail must not tell the agent "stopped" in the gap
+        server.ensure_deck(self.deck)
+        info = {"pid": 2 ** 30, "port": 9, "url": "x", "token": "t", "restarting": _time.time()}  # nothing listens on port 9
+        server.server_file(self.deck).write_text(json.dumps(info), encoding="utf-8")
+        self.addCleanup(server.server_file(self.deck).unlink, missing_ok=True)
+        self.assertIs(server.server_up(self.deck), True)
+        info["restarting"] = _time.time() - server.RESTART_GRACE - 1  # the new one never came up
+        server.server_file(self.deck).write_text(json.dumps(info), encoding="utf-8")
+        self.assertIs(server.server_up(self.deck), False)
+
+    def test_a_detached_server_comes_back_on_new_code_at_the_same_url(self):
+        code = self.proj / "code"  # a copy: touching the real files would restart the user's servers
+        shutil.copytree(Path(SERVER_PY).parent, code, ignore=shutil.ignore_patterns("__pycache__", "test_*.py", "vendor"))
+        py = str(code / "server.py")
+        self.addCleanup(subprocess.run, [sys.executable, py, "--stop", str(self.deck)], capture_output=True, timeout=30)
+        r = subprocess.run([sys.executable, py, "--detach", "--no-open", "--port", "8843", str(self.deck)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        old = json.loads(server.server_file(self.deck).read_text(encoding="utf-8"))
+        self.edit(code / "exporter.py", (code / "exporter.py").read_text(encoding="utf-8") + "\n# updated\n")
+        new = None
+        for _ in range(120):
+            new = server.live_server(self.deck)
+            if new and new["pid"] != old["pid"]:
+                break
+            _time.sleep(0.25)
+        self.assertNotEqual(new and new["pid"], old["pid"], (server.runtime(self.deck) / "server.log").read_text(encoding="utf-8", errors="replace"))
+        self.assertEqual(new["url"], old["url"])  # open tabs keep working
+        self.assertNotIn("restarting", new)
+
     def test_tail_tells_recent_work_and_a_stopped_server(self):
         server.ensure_deck(self.deck)
         rt = server.runtime(self.deck)
